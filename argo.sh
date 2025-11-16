@@ -32,10 +32,10 @@ echo "║   🚀 数字套利 Cloudflare Argo 安装器        ║"
 echo "╚══════════════════════════════════════════╝"
 echo -e "${re}"
 
-printf "go"
-printf "go"
-printf "go"
-printf "go"
+printf "%-18s ${yellow}%s${re}\n"  "${green}📺 YouTube频道："   "https://youtube.com/@am_clubs"
+printf "%-18s ${yellow}%s${re}\n"  "${green}💬 TG交流群组："    "https://t.me/am_clubs"
+printf "%-18s ${yellow}%s${re}\n"  "${green}💻 GitHub仓库："    "https://github.com/amclubs"
+printf "%-18s ${yellow}%s${re}\n"  "${green}🌐 个人博客："      "https://amclubss.com"
 
 echo -e "${cyan}──────────────────────────────────────────${re}"
 
