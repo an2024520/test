@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  模块四 (v3.0)：批量智能级联拆除工具 (支持一次删多个)
+#  模块四 (v4.0)：批量智能拆除工具 (支持 手动批量 / 一键清空)
 # ============================================================
 
 # 颜色定义
@@ -10,12 +10,13 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 SKYBLUE='\033[0;36m'
 PLAIN='\033[0m'
+GRAY='\033[0;37m'
 
 # 核心路径
 CONFIG_FILE="/usr/local/etc/xray/config.json"
 BACKUP_FILE="/usr/local/etc/xray/config.json.bak"
 
-echo -e "${RED}>>> [模块四] 批量智能节点拆除工具 (Multi-Delete)...${PLAIN}"
+echo -e "${RED}>>> [模块四] 智能节点拆除工具 (Node Destroyer v4.0)...${PLAIN}"
 
 # 1. 检查配置文件
 if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -32,50 +33,74 @@ echo -e "----------------------------------------------------"
 printf "%-25s %-10s %-15s\n" "节点标识 (Tag)" "端口" "协议"
 echo -e "----------------------------------------------------"
 
+# 检查节点数量
 NODE_COUNT=$(jq '.inbounds | length' "$CONFIG_FILE")
 if [[ "$NODE_COUNT" == "0" ]]; then
-    echo -e "${RED}当前没有配置任何节点！${PLAIN}"
+    echo -e "${RED}当前没有配置任何节点！无需删除。${PLAIN}"
     exit 0
 fi
 
-jq -r '.inbounds[] | "\(.tag) \(.port) \(.protocol)"' "$CONFIG_FILE" | while read -r tag port proto; do
+# 定义数组存储所有存在的端口
+declare -a ALL_EXISTING_PORTS
+
+# 使用 <(...) 进程替换，确保数组在 while 循环外依然有效
+while read -r tag port proto; do
     printf "${SKYBLUE}%-25s${PLAIN} ${GREEN}%-10s${PLAIN} %-15s\n" "$tag" "$port" "$proto"
-done
+    ALL_EXISTING_PORTS+=("$port")
+done < <(jq -r '.inbounds[] | "\(.tag) \(.port) \(.protocol)"' "$CONFIG_FILE")
+
 echo -e "----------------------------------------------------"
 
-# 3. 用户输入 (支持多个端口)
+# 3. 操作模式选择
 # -----------------------------------------------------------
-echo -e "${YELLOW}请输入要删除的端口号 (支持批量删除)${PLAIN}"
-echo -e "说明: 如果要删除多个，请用空格分隔，例如: ${GREEN}2053 8443 32111${PLAIN}"
-read -p "目标端口: " INPUT_PORTS
+echo -e "${YELLOW}请选择删除模式:${PLAIN}"
+echo -e "  1. ${GREEN}手动输入${PLAIN} (删除特定端口，支持批量)"
+echo -e "  2. ${RED}全部删除${PLAIN} (清空列表中的 ${NODE_COUNT} 个节点，回归初始状态)"
+read -p "请选择 [1-2]: " MODE_CHOICE
 
-if [[ -z "$INPUT_PORTS" ]]; then
-    echo -e "操作已取消。"
-    exit 0
-fi
+declare -a TARGET_PORTS_ARRAY
 
-# 4. 执行批量删除逻辑
+case $MODE_CHOICE in
+    2)
+        # === 模式 2: 全选 (核弹模式) ===
+        echo -e "${RED}警告: 你选择了删除所有节点！${PLAIN}"
+        read -p "确认要清空所有节点吗？(y/n): " CONFIRM_ALL
+        if [[ "$CONFIRM_ALL" != "y" ]]; then
+            echo -e "操作已取消。"
+            exit 0
+        fi
+        echo -e "${RED}正在准备清空所有节点...${PLAIN}"
+        TARGET_PORTS_ARRAY=("${ALL_EXISTING_PORTS[@]}")
+        ;;
+    *)
+        # === 模式 1: 手动 (默认) ===
+        echo -e "${YELLOW}请输入要删除的端口号 (支持批量)${PLAIN}"
+        echo -e "说明: 用空格分隔多个端口，例如: ${GREEN}2053 8443${PLAIN}"
+        read -p "目标端口: " INPUT_PORTS
+        
+        if [[ -z "$INPUT_PORTS" ]]; then
+            echo -e "操作取消。"
+            exit 0
+        fi
+        read -a TARGET_PORTS_ARRAY <<< "$INPUT_PORTS"
+        ;;
+esac
+
+# 4. 执行批量/全量删除
 # -----------------------------------------------------------
-echo -e "${YELLOW}正在备份配置文件...${PLAIN}"
+echo -e "${YELLOW}正在执行清理操作...${PLAIN}"
+# 备份
 cp "$CONFIG_FILE" "$BACKUP_FILE"
-
-# 将输入的字符串转换为数组
-read -a PORT_ARRAY <<< "$INPUT_PORTS"
-
 CHANGE_COUNT=0
 
-# 开始循环处理每个端口
-for TARGET_PORT in "${PORT_ARRAY[@]}"; do
-    echo -e "----------------------------------------"
-    echo -e "正在处理端口: ${GREEN}$TARGET_PORT${PLAIN} ..."
-
-    # 4.1 验证端口是否为数字
+for TARGET_PORT in "${TARGET_PORTS_ARRAY[@]}"; do
+    # 4.1 验证端口数字
     if ! [[ "$TARGET_PORT" =~ ^[0-9]+$ ]]; then
         echo -e "${RED}跳过: '$TARGET_PORT' 不是有效的端口号。${PLAIN}"
         continue
     fi
 
-    # 4.2 查找 Tag (为了清理路由)
+    # 4.2 查找 Tag (必须先找 Tag 才能删路由)
     TARGET_TAG=$(jq -r --argjson p "$TARGET_PORT" '.inbounds[] | select(.port == $p) | .tag' "$CONFIG_FILE")
 
     if [[ -z "$TARGET_TAG" ]] || [[ "$TARGET_TAG" == "null" ]]; then
@@ -83,14 +108,16 @@ for TARGET_PORT in "${PORT_ARRAY[@]}"; do
         continue
     fi
 
-    echo -e "  -> 识别到节点 Tag: ${SKYBLUE}$TARGET_TAG${PLAIN}"
+    echo -e "----------------------------------------"
+    echo -e "正在处理: ${SKYBLUE}$TARGET_TAG${PLAIN} (${GREEN}$TARGET_PORT${PLAIN})"
 
-    # 4.3 删除 inbound 节点
+    # 4.3 删除 inbound 节点 (物理删除)
     tmp1=$(mktemp)
     jq --argjson p "$TARGET_PORT" '.inbounds |= map(select(.port != $p))' "$CONFIG_FILE" > "$tmp1" && mv "$tmp1" "$CONFIG_FILE"
     echo -e "  -> 节点配置已移除。"
 
     # 4.4 删除相关的 routing 规则 (级联清理)
+    # 逻辑: 只要路由规则的 inboundTag 里包含这个 tag，就整条删掉
     tmp2=$(mktemp)
     jq --arg tag "$TARGET_TAG" '.routing.rules |= map(select(.inboundTag | index($tag) | not))' "$CONFIG_FILE" > "$tmp2" && mv "$tmp2" "$CONFIG_FILE"
     echo -e "  -> 关联路由规则已清理。"
@@ -100,7 +127,8 @@ done
 
 echo -e "----------------------------------------"
 
-# 5. 重启服务 (只在有变动时重启)
+# 5. 重启服务
+# -----------------------------------------------------------
 if [[ "$CHANGE_COUNT" -gt 0 ]]; then
     echo -e "${YELLOW}正在重启 Xray 服务以应用 ${CHANGE_COUNT} 个更改...${PLAIN}"
     systemctl restart xray
@@ -108,8 +136,9 @@ if [[ "$CHANGE_COUNT" -gt 0 ]]; then
 
     if systemctl is-active --quiet xray; then
         echo -e "${GREEN}========================================${PLAIN}"
-        echo -e "${GREEN}    批量拆除成功！${PLAIN}"
+        echo -e "${GREEN}    拆除成功！${PLAIN}"
         echo -e "${GREEN}========================================${PLAIN}"
+        echo -e "已成功移除 ${CHANGE_COUNT} 个节点及其附属路由规则。"
         echo -e "当前剩余节点数: $(jq '.inbounds | length' "$CONFIG_FILE")"
     else
         echo -e "${RED}重启失败！正在回滚配置...${PLAIN}"
