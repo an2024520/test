@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  模块六 (v2.0)：批量节点分流挂载器 (智能过滤 + 批量操作)
+#  模块六 (v3.0)：批量节点分流挂载器 (支持 手动批量 / 一键全选)
 # ============================================================
 
 # 颜色定义
@@ -16,7 +16,7 @@ GRAY='\033[0;37m'
 CONFIG_FILE="/usr/local/etc/xray/config.json"
 BACKUP_FILE="/usr/local/etc/xray/config.json.bak"
 
-echo -e "${GREEN}>>> [模块六] 批量节点分流挂载器 (Batch Router)...${PLAIN}"
+echo -e "${GREEN}>>> [模块六] 智能分流挂载器 (Smart Router)...${PLAIN}"
 
 # 1. 基础环境检查
 if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -27,7 +27,7 @@ if ! command -v jq &> /dev/null; then
     apt update -y && apt install -y jq
 fi
 
-# 2. 配置 SOCKS5 出口通道 (保持不变)
+# 2. 配置 SOCKS5 出口通道
 # -----------------------------------------------------------
 echo -e "${YELLOW}--- 第一步：配置/确认出口代理 ---${PLAIN}"
 echo -e "请输入 SOCKS5 代理地址 (通常是 WARP 或其他代理)"
@@ -54,7 +54,7 @@ else
     [[ "$FORCE" != "y" ]] && exit 1
 fi
 
-# 3. 写入出站规则
+# 3. 写入出站规则 (如果有新代理配置则写入)
 # -----------------------------------------------------------
 PROXY_TAG="custom-socks-out-$PROXY_PORT"
 IS_EXIST=$(jq --arg tag "$PROXY_TAG" '.outbounds[] | select(.tag == $tag)' "$CONFIG_FILE")
@@ -70,7 +70,7 @@ if [[ -z "$IS_EXIST" ]]; then
     jq --argjson new_out "$OUTBOUND_JSON" '.outbounds += [$new_out]' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
 fi
 
-# 4. 选择节点 (智能过滤已挂载节点)
+# 4. 扫描并展示可用节点
 # -----------------------------------------------------------
 echo -e ""
 echo -e "${YELLOW}--- 第二步：选择要“变身”的节点 ---${PLAIN}"
@@ -79,61 +79,73 @@ echo -e "----------------------------------------------------"
 printf "%-25s %-10s %-15s\n" "节点标识 (Tag)" "端口" "协议"
 echo -e "----------------------------------------------------"
 
-# === 核心逻辑升级：获取“忙碌”的 Tag 列表 ===
-# 扫描 routing.rules，提取所有已经在 inboundTag 里的标签
+# 获取“忙碌”的 Tag 列表 (已经在路由规则里的)
 BUSY_TAGS=$(jq -r '[.routing.rules[] | select(.inboundTag != null) | .inboundTag[]] | join(" ")' "$CONFIG_FILE")
 
-AVAILABLE_COUNT=0
+# 定义一个数组，用来存储所有“可用”的端口，方便后面“全选”使用
+declare -a ALL_AVAILABLE_PORTS
 
-# 遍历所有节点并过滤
-# 我们将 jq 的输出读入循环，同时传入 BUSY_TAGS 进行比对
-jq -r '.inbounds[] | "\(.tag) \(.port) \(.protocol)"' "$CONFIG_FILE" | while read -r tag port proto; do
+# 使用进程替换 <(...) 来避免管道造成的子shell变量丢失问题
+while read -r tag port proto; do
     # 检查当前 tag 是否出现在 BUSY_TAGS 字符串中
     if [[ " $BUSY_TAGS " =~ " $tag " ]]; then
-        # 如果已被占用，则不显示 (或者你可以选择用灰色显示，这里我们按要求直接不列出)
-        continue
+        continue # 跳过忙碌节点
     else
         printf "${SKYBLUE}%-25s${PLAIN} ${GREEN}%-10s${PLAIN} %-15s\n" "$tag" "$port" "$proto"
-        ((AVAILABLE_COUNT++))
+        # 将端口加入数组
+        ALL_AVAILABLE_PORTS+=("$port")
     fi
-done
+done < <(jq -r '.inbounds[] | "\(.tag) \(.port) \(.protocol)"' "$CONFIG_FILE")
+
 echo -e "----------------------------------------------------"
 
-# 如果没有可用节点
+AVAILABLE_COUNT=${#ALL_AVAILABLE_PORTS[@]}
+
 if [[ "$AVAILABLE_COUNT" == "0" ]]; then
-    # 这里加个简单判断，虽然在 pipe 中变量传递有局限，但视觉上列表为空用户也能看出来
-    # 稍微严谨点可以重新统计一次，但为了脚本效率，直接提示用户即可
-    echo -e "${GRAY}提示: 如果列表为空，说明所有节点都已经挂载了代理。${PLAIN}"
-    echo -e "请先使用 [模块七] 解除挂载，或新建节点。"
-fi
-
-# 5. 批量输入处理
-# -----------------------------------------------------------
-echo -e "${YELLOW}请输入要挂载代理的端口号 (支持批量)${PLAIN}"
-echo -e "说明: 用空格分隔多个端口，例如: ${GREEN}2053 8443${PLAIN}"
-read -p "目标端口: " INPUT_PORTS
-
-if [[ -z "$INPUT_PORTS" ]]; then
-    echo -e "操作取消。"
+    echo -e "${GRAY}提示: 所有节点都已经挂载了代理，无需操作。${PLAIN}"
     exit 0
 fi
 
-# 备份
-cp "$CONFIG_FILE" "$BACKUP_FILE"
+# 5. 操作模式选择
+# -----------------------------------------------------------
+echo -e "${YELLOW}请选择挂载模式:${PLAIN}"
+echo -e "  1. ${GREEN}手动输入${PLAIN} (输入特定端口，支持批量)"
+echo -e "  2. ${SKYBLUE}全部挂载${PLAIN} (将列表中的 ${AVAILABLE_COUNT} 个节点全部挂载)"
+read -p "请选择 [1-2]: " MODE_CHOICE
 
-# 转数组
-read -a PORT_ARRAY <<< "$INPUT_PORTS"
+declare -a TARGET_PORTS_ARRAY
+
+case $MODE_CHOICE in
+    2)
+        # === 模式 2: 全选 ===
+        echo -e "${SKYBLUE}已选择全部挂载。${PLAIN}"
+        # 直接将之前存好的所有可用端口复制给目标数组
+        TARGET_PORTS_ARRAY=("${ALL_AVAILABLE_PORTS[@]}")
+        ;;
+    *)
+        # === 模式 1: 手动 (默认) ===
+        echo -e "${YELLOW}请输入要挂载代理的端口号 (支持批量)${PLAIN}"
+        echo -e "说明: 用空格分隔多个端口，例如: ${GREEN}2053 8443${PLAIN}"
+        read -p "目标端口: " INPUT_PORTS
+        
+        if [[ -z "$INPUT_PORTS" ]]; then
+            echo -e "操作取消。"
+            exit 0
+        fi
+        read -a TARGET_PORTS_ARRAY <<< "$INPUT_PORTS"
+        ;;
+esac
+
+# 6. 批量执行挂载
+# -----------------------------------------------------------
+echo -e "${YELLOW}正在配置路由规则...${PLAIN}"
+cp "$CONFIG_FILE" "$BACKUP_FILE"
 CHANGE_COUNT=0
 
-# 6. 批量循环挂载
-# -----------------------------------------------------------
-for TARGET_PORT in "${PORT_ARRAY[@]}"; do
-    echo -e "----------------------------------------"
-    echo -e "正在处理端口: ${GREEN}$TARGET_PORT${PLAIN} ..."
-
+for TARGET_PORT in "${TARGET_PORTS_ARRAY[@]}"; do
     # 验证数字
     if ! [[ "$TARGET_PORT" =~ ^[0-9]+$ ]]; then
-        echo -e "${RED}跳过: 无效端口号。${PLAIN}"
+        echo -e "${RED}跳过: '$TARGET_PORT' 不是有效的端口号。${PLAIN}"
         continue
     fi
 
@@ -145,15 +157,15 @@ for TARGET_PORT in "${PORT_ARRAY[@]}"; do
         continue
     fi
 
-    # 二次检查：防止用户手动输入了列表中没显示（已挂载）的端口
+    # 二次检查 (防止手动模式下输入了已挂载的端口)
     if [[ " $BUSY_TAGS " =~ " $TARGET_NODE_TAG " ]]; then
-        echo -e "${RED}跳过: 节点 $TARGET_NODE_TAG 已经挂载了代理，请勿重复操作。${PLAIN}"
+        echo -e "${RED}跳过: 节点 $TARGET_NODE_TAG 已经挂载了代理。${PLAIN}"
         continue
     fi
 
-    echo -e "  -> 选中节点: ${SKYBLUE}$TARGET_NODE_TAG${PLAIN}"
+    echo -e "  -> 处理中: ${SKYBLUE}$TARGET_NODE_TAG${PLAIN} (${GREEN}$TARGET_PORT${PLAIN})"
 
-    # 写入路由规则 (插入到最前面)
+    # 写入路由规则
     RULE_JSON=$(jq -n \
         --arg inTag "$TARGET_NODE_TAG" \
         --arg outTag "$PROXY_TAG" \
@@ -166,29 +178,27 @@ for TARGET_PORT in "${PORT_ARRAY[@]}"; do
     tmp_rule=$(mktemp)
     jq --argjson new_rule "$RULE_JSON" '.routing.rules = [$new_rule] + .routing.rules' "$CONFIG_FILE" > "$tmp_rule" && mv "$tmp_rule" "$CONFIG_FILE"
     
-    echo -e "  -> 路由规则已添加。"
     ((CHANGE_COUNT++))
 done
-echo -e "----------------------------------------"
 
 # 7. 重启与验证
 # -----------------------------------------------------------
 if [[ "$CHANGE_COUNT" -gt 0 ]]; then
+    echo -e "----------------------------------------"
     echo -e "${YELLOW}正在重启 Xray 以应用 ${CHANGE_COUNT} 个更改...${PLAIN}"
     systemctl restart xray
     sleep 1
 
     if systemctl is-active --quiet xray; then
         echo -e "${GREEN}========================================${PLAIN}"
-        echo -e "${GREEN}    批量挂载成功！${PLAIN}"
+        echo -e "${GREEN}    操作成功！${PLAIN}"
         echo -e "${GREEN}========================================${PLAIN}"
-        echo -e "出口流量已重定向至: ${SKYBLUE}${PROXY_IP}:${PROXY_PORT}${PLAIN}"
-        echo -e "请使用 IP 检测工具验证效果。"
+        echo -e "已为 ${CHANGE_COUNT} 个节点挂载了代理出口: ${PROXY_IP}:${PROXY_PORT}"
     else
         echo -e "${RED}重启失败！正在回滚...${PLAIN}"
         cp "$BACKUP_FILE" "$CONFIG_FILE"
         systemctl restart xray
     fi
 else
-    echo -e "${YELLOW}未做任何更改。${PLAIN}"
+    echo -e "${YELLOW}未做任何有效更改。${PLAIN}"
 fi
