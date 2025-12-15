@@ -28,6 +28,11 @@ check_run() {
         chmod +x "$1"
         ./"$1"
     else
+
+        echo -e "${RED}错误: 找不到脚本文件 [$1]${PLAIN}"
+        echo -e "请确保所有模块脚本都在当前目录下。"
+        echo -e "开始下载所有所需脚本。"
+        sleep 10
         wget -O xray_core.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/%E5%9C%B0%E5%9F%BA_xray_core
         wget -O xray_vless_xhttp.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray%E6%A8%A1%E5%9D%97_vless%2Bxhttp%2Breality.sh
         wget -O xray_vless_vision.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray%E6%A8%A1%E5%9D%97_vless_tcp_reality_Vision
@@ -35,10 +40,6 @@ check_run() {
         wget -O xray_module5_boost.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray_BBR%20%2B%20ECN%20%2B%20%E5%86%85%E6%A0%B8%E4%BC%98%E5%8C%96
         wget -O xray_module6_attach_warp.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray_%E7%BB%99%E8%8A%82%E7%82%B9%E5%A5%97%E4%B8%8A%E6%9C%AC%E5%9C%B0SOCKS5.sh
         wget -O xray_module7_detach_warp.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray_%E5%8F%96%E6%B6%88%E8%8A%82%E7%82%B9%E7%9A%84socks5%E5%87%BA%E5%8F%A3.sh
-
-        echo -e "${RED}错误: 找不到脚本文件 [$1]${PLAIN}"
-        echo -e "请确保所有模块脚本都在当前目录下。"
-        echo -e "开始下载所有所需脚本。"
 
         read -p "按回车键返回菜单..."
     fi
