@@ -6,7 +6,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 PLAIN='\033[0m'
 
-echo -e "${GREEN}>>> 开始部署 Xray (自定义端口 + 自定义域名 + 适配 v25.12.8+)...${PLAIN}"
+echo -e "${GREEN}>>> 开始部署 Xray (日本 VPS 优化版 - Amazon JP)...${PLAIN}"
 
 # 1. 检查 Root
 if [[ $EUID -ne 0 ]]; then
@@ -20,12 +20,12 @@ fi
 
 # --- 1. 设置监听端口 ---
 while true; do
-    echo -e "${YELLOW}提示: 建议使用非常规端口 (如 2053, 2083, 8443) 以避开 443 端口占用冲突。${PLAIN}"
-    read -p "请输入 Xray 监听端口 (默认 443): " CUSTOM_PORT
+    echo -e "${YELLOW}提示: 建议使用 2053, 2083, 8443 等端口。${PLAIN}"
+    read -p "请输入 Xray 监听端口 (默认 2053): " CUSTOM_PORT
     
     if [[ -z "$CUSTOM_PORT" ]]; then
-        PORT=443
-        echo -e "${GREEN}使用默认端口: 443${PLAIN}"
+        PORT=2053
+        echo -e "${GREEN}使用默认端口: 2053${PLAIN}"
         break
     fi
 
@@ -40,40 +40,50 @@ done
 
 echo "------------------------------------------"
 
-# --- 2. 设置伪装域名 (SNI) ---
-echo -e "${YELLOW}提示: 请输入适合你所在地区的伪装域名 (不要带 https://)。${PLAIN}"
-echo -e "推荐列表:"
-echo -e "  - www.microsoft.com (通用)"
-echo -e "  - www.apple.com (苹果服务)"
-echo -e "  - dl.google.com (谷歌下载)"
-echo -e "  - www.amazon.com (亚马逊)"
-echo -e "  - updates.cdn-apple.com (CDN)"
+# --- 2. 设置伪装域名 (SNI) - 日本专供版 ---
+echo -e "${YELLOW}提示: 针对日本 VPS，推荐使用以下域名 (已验证国内可访问性):${PLAIN}"
+echo -e "  1. www.amazon.co.jp (日本亚马逊 - 首选，最稳)"
+echo -e "  2. www.nintendo.co.jp (任天堂 - 适合 UDP 游戏流量)"
+echo -e "  3. www.microsoft.com (微软 - 全球通用保底)"
 
-read -p "请输入伪装域名 (默认 www.microsoft.com): " CUSTOM_SNI
+read -p "请输入伪装域名 (默认 www.amazon.co.jp): " CUSTOM_SNI
 
 if [[ -z "$CUSTOM_SNI" ]]; then
-    SNI="www.microsoft.com"
+    SNI="www.amazon.co.jp"
 else
     SNI="$CUSTOM_SNI"
 fi
-echo -e "${GREEN}伪装域名已设置为: $SNI${PLAIN}"
+
+# --- 3. 连通性预检 (新增功能) ---
+echo -e "${YELLOW}正在检查 VPS 访问 $SNI 的连通性...${PLAIN}"
+if curl -s -I --max-time 5 "https://$SNI" >/dev/null; then
+    echo -e "${GREEN}检测通过！你的 VPS 可以顺畅连接到 $SNI。${PLAIN}"
+else
+    echo -e "${RED}警告: 你的 VPS 似乎无法连接到 $SNI (超时或被拒)。${PLAIN}"
+    echo -e "${YELLOW}这可能会导致 Reality 无法工作。是否继续？(y/n)${PLAIN}"
+    read -p "请选择: " CONTINUE
+    if [[ "$CONTINUE" != "y" ]]; then
+        echo "已取消安装。"
+        exit 1
+    fi
+fi
 
 # ==========================================
 # 安装流程
 # ==========================================
 
-# 3. 清理旧环境
+# 4. 清理旧环境
 echo -e "${YELLOW}正在清理旧版本...${PLAIN}"
 systemctl stop xray >/dev/null 2>&1
 systemctl disable xray >/dev/null 2>&1
 rm -rf /usr/local/bin/xray /usr/local/bin/xray_core /usr/local/etc/xray /etc/systemd/system/xray.service
 systemctl daemon-reload
 
-# 4. 安装依赖
+# 5. 安装依赖
 apt update -y
 apt install -y curl wget jq openssl uuid-runtime unzip
 
-# 5. 下载 Xray 最新版
+# 6. 下载 Xray 最新版
 ARCH=$(dpkg --print-architecture)
 case $ARCH in
     amd64) XRAY_ARCH="64" ;;
@@ -105,17 +115,15 @@ chmod +x /usr/local/bin/xray_core/xray
 
 XRAY_BIN="/usr/local/bin/xray_core/xray"
 
-# 6. 生成密钥 (v25.12.8+ 适配)
+# 7. 生成密钥 (适配 v25.12.8+)
 echo -e "${YELLOW}正在生成 Reality 密钥...${PLAIN}"
 
 UUID=$(uuidgen)
 SHORT_ID=$(openssl rand -hex 4)
 XHTTP_PATH="/$(openssl rand -hex 4)"
 
-# 生成并抓取
 RAW_KEYS=$($XRAY_BIN x25519)
 PRIVATE_KEY=$(echo "$RAW_KEYS" | grep "PrivateKey:" | awk -F ":" '{print $2}' | tr -d ' \r\n')
-# 抓取 Password 作为公钥
 PUBLIC_KEY=$(echo "$RAW_KEYS" | grep "Password:" | awk -F ":" '{print $2}' | tr -d ' \r\n')
 
 # 调试输出
@@ -127,11 +135,10 @@ if [[ -z "$PRIVATE_KEY" ]] || [[ -z "$PUBLIC_KEY" ]]; then
     exit 1
 fi
 
-# 7. 写入配置文件 config.json
+# 8. 写入配置文件
 mkdir -p /usr/local/etc/xray
 CONFIG_FILE="/usr/local/etc/xray/config.json"
 
-# 注意：dest: "$SNI:443" 表示回落目标的端口，通常目标网站(如微软)都是 443，这里不用改
 cat <<EOF > $CONFIG_FILE
 {
   "log": {
@@ -189,7 +196,7 @@ cat <<EOF > $CONFIG_FILE
 }
 EOF
 
-# 8. 配置 Systemd
+# 9. Systemd 配置
 cat <<EOF > /etc/systemd/system/xray.service
 [Unit]
 Description=Xray Service
@@ -206,38 +213,32 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-# 9. 启动
+# 10. 启动
 echo -e "${YELLOW}正在启动服务...${PLAIN}"
 systemctl daemon-reload
 systemctl enable xray
 systemctl restart xray
 
-# 10. 输出结果
+# 11. 结果输出
 PUBLIC_IP=$(curl -s4 ifconfig.me)
-NODE_NAME="Xray-Reality-${PUBLIC_IP}"
+NODE_NAME="Xray-JP-${PUBLIC_IP}"
 
-# VLESS 链接
 SHARE_LINK="vless://${UUID}@${PUBLIC_IP}:${PORT}?security=reality&encryption=none&pbk=${PUBLIC_KEY}&headerType=none&type=xhttp&sni=${SNI}&sid=${SHORT_ID}&path=${XHTTP_PATH}&fp=chrome#${NODE_NAME}"
 
 sleep 2
 if systemctl is-active --quiet xray; then
     echo -e ""
     echo -e "${GREEN}========================================${PLAIN}"
-    echo -e "${GREEN}      Xray (Reality+XHTTP) 部署成功    ${PLAIN}"
+    echo -e "${GREEN}   Xray (日本 VPS 优化版) 部署成功     ${PLAIN}"
     echo -e "${GREEN}========================================${PLAIN}"
     echo -e "IP 地址     : ${YELLOW}${PUBLIC_IP}${PLAIN}"
     echo -e "监听端口    : ${YELLOW}${PORT}${PLAIN}"
     echo -e "伪装域名    : ${YELLOW}${SNI}${PLAIN}"
-    echo -e "UUID        : ${YELLOW}${UUID}${PLAIN}"
     echo -e "Reality公钥 : ${YELLOW}${PUBLIC_KEY}${PLAIN}"
-    echo -e "XHTTP 路径  : ${YELLOW}${XHTTP_PATH}${PLAIN}"
     echo -e "----------------------------------------"
-    echo -e "🚀 [v2rayN / Nekoray 导入链接]:"
-    echo -e "${YELLOW}${SHARE_LINK}${PLAIN}"
+    echo -e "🚀 [链接]: ${YELLOW}${SHARE_LINK}${PLAIN}"
     echo -e "----------------------------------------"
-    echo -e "🛡️ 防火墙设置:"
-    echo -e "请务必在云服务器后台(安全组)放行端口: **${PORT}** (TCP + UDP)"
+    echo -e "⚠️ 防火墙提示: 请确保云服务商安全组已放行 UDP/TCP ${PORT} 端口"
 else
-    echo -e "${RED}启动失败！请运行以下命令查看日志：${PLAIN}"
-    echo -e "journalctl -u xray -e"
+    echo -e "${RED}启动失败！请检查日志: journalctl -u xray -e${PLAIN}"
 fi
