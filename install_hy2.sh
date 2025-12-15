@@ -45,10 +45,15 @@ else
     PASSWORD="$CUSTOM_PASSWORD"
 fi
 
-# 3. 安装必要依赖 (新增 socat)
+# 3. 安装必要依赖 (新增 socat 和 cron)
 echo -e "${YELLOW}正在更新系统并安装依赖...${PLAIN}"
 apt update -y
-apt install -y curl openssl jq wget socat
+# 修复点：这里增加了 cron，解决了 acme.sh 安装失败的问题
+apt install -y curl openssl jq wget socat cron
+
+# 确保 cron 服务启动
+systemctl start cron
+systemctl enable cron
 
 # 4. 获取架构并下载最新版内核
 ARCH=$(dpkg --print-architecture)
@@ -110,7 +115,6 @@ fi
 echo -e "${GREEN}证书申请成功！${PLAIN}"
 
 # 6. 写入配置文件 config.yaml
-# 注意：这里去掉了 masquerade 伪装 bing.com，因为有了真实域名，不再需要伪装成别人
 cat <<EOF > /etc/hysteria/config.yaml
 server:
   listen: :$CUSTOM_PORT
@@ -156,11 +160,10 @@ systemctl daemon-reload
 systemctl enable hysteria-server
 systemctl restart hysteria-server
 
-# 9. 获取公网 IP (用于展示，但链接里主要用域名)
+# 9. 获取公网 IP
 PUBLIC_IP=$(curl -s4 ifconfig.me)
 
 # 10. 生成 v2rayN 兼容链接
-# 修改点：sni 改为用户域名，去除 insecure=1
 SHARE_LINK="hysteria2://${PASSWORD}@${CUSTOM_DOMAIN}:${CUSTOM_PORT}/?sni=${CUSTOM_DOMAIN}&name=Hy2-${CUSTOM_DOMAIN}"
 
 echo -e ""
