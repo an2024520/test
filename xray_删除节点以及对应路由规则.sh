@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  模块四 (v2.0)：智能级联拆除工具 (清理节点 + 清理关联路由)
+#  模块四 (v3.0)：批量智能级联拆除工具 (支持一次删多个)
 # ============================================================
 
 # 颜色定义
@@ -15,7 +15,7 @@ PLAIN='\033[0m'
 CONFIG_FILE="/usr/local/etc/xray/config.json"
 BACKUP_FILE="/usr/local/etc/xray/config.json.bak"
 
-echo -e "${RED}>>> [模块四] 智能节点拆除工具 (级联清理版)...${PLAIN}"
+echo -e "${RED}>>> [模块四] 批量智能节点拆除工具 (Multi-Delete)...${PLAIN}"
 
 # 1. 检查配置文件
 if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -43,59 +43,80 @@ jq -r '.inbounds[] | "\(.tag) \(.port) \(.protocol)"' "$CONFIG_FILE" | while rea
 done
 echo -e "----------------------------------------------------"
 
-# 3. 用户选择
-echo -e "${YELLOW}请输入你想要删除的节点的 [端口号] ${PLAIN}"
-read -p "目标端口: " TARGET_PORT
+# 3. 用户输入 (支持多个端口)
+# -----------------------------------------------------------
+echo -e "${YELLOW}请输入要删除的端口号 (支持批量删除)${PLAIN}"
+echo -e "说明: 如果要删除多个，请用空格分隔，例如: ${GREEN}2053 8443 32111${PLAIN}"
+read -p "目标端口: " INPUT_PORTS
 
-if [[ -z "$TARGET_PORT" ]]; then
+if [[ -z "$INPUT_PORTS" ]]; then
     echo -e "操作已取消。"
     exit 0
 fi
 
-# 4. 关键步骤：先获取 Tag (为了后续清理路由)
+# 4. 执行批量删除逻辑
 # -----------------------------------------------------------
-# 我们必须在删除节点之前，先查出它的 Tag 名字
-TARGET_TAG=$(jq -r --argjson p "$TARGET_PORT" '.inbounds[] | select(.port == $p) | .tag' "$CONFIG_FILE")
-
-if [[ -z "$TARGET_TAG" ]] || [[ "$TARGET_TAG" == "null" ]]; then
-    echo -e "${RED}错误: 找不到端口为 $TARGET_PORT 的节点！${PLAIN}"
-    exit 1
-fi
-
-echo -e "检测到目标节点 Tag: ${SKYBLUE}$TARGET_TAG${PLAIN}"
-
-# 5. 执行级联删除
-# -----------------------------------------------------------
-echo -e "${YELLOW}正在备份配置...${PLAIN}"
+echo -e "${YELLOW}正在备份配置文件...${PLAIN}"
 cp "$CONFIG_FILE" "$BACKUP_FILE"
 
-# 5.1 删除 inbound 节点
-echo -e "${YELLOW}Step 1: 正在移除监听端口 $TARGET_PORT ...${PLAIN}"
-tmp1=$(mktemp)
-jq --argjson p "$TARGET_PORT" '.inbounds |= map(select(.port != $p))' "$CONFIG_FILE" > "$tmp1" && mv "$tmp1" "$CONFIG_FILE"
+# 将输入的字符串转换为数组
+read -a PORT_ARRAY <<< "$INPUT_PORTS"
 
-# 5.2 删除相关的 routing 规则 (清理幽灵规则)
-# 逻辑：在 routing.rules 里，如果某个规则的 inboundTag 列表里包含了我们要删的 Tag，就把这条规则删掉
-echo -e "${YELLOW}Step 2: 正在清理关联路由规则 (清理幽灵配置) ...${PLAIN}"
-tmp2=$(mktemp)
-jq --arg tag "$TARGET_TAG" '.routing.rules |= map(select(.inboundTag | index($tag) | not))' "$CONFIG_FILE" > "$tmp2" && mv "$tmp2" "$CONFIG_FILE"
+CHANGE_COUNT=0
 
-# 6. 重启服务
-echo -e "${YELLOW}正在重启 Xray 服务...${PLAIN}"
-systemctl restart xray
-sleep 1
-
-if systemctl is-active --quiet xray; then
-    echo -e "${GREEN}========================================${PLAIN}"
-    echo -e "${GREEN}    级联拆除成功！${PLAIN}"
-    echo -e "${GREEN}========================================${PLAIN}"
-    echo -e "1. 节点 [${TARGET_TAG}] 已被移除。"
-    echo -e "2. 所有指向该节点的 WARP/分流规则 已被清理。"
+# 开始循环处理每个端口
+for TARGET_PORT in "${PORT_ARRAY[@]}"; do
     echo -e "----------------------------------------"
-    echo -e "当前剩余节点数: $(jq '.inbounds | length' "$CONFIG_FILE")"
-else
-    echo -e "${RED}重启失败！正在回滚...${PLAIN}"
-    cp "$BACKUP_FILE" "$CONFIG_FILE"
+    echo -e "正在处理端口: ${GREEN}$TARGET_PORT${PLAIN} ..."
+
+    # 4.1 验证端口是否为数字
+    if ! [[ "$TARGET_PORT" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}跳过: '$TARGET_PORT' 不是有效的端口号。${PLAIN}"
+        continue
+    fi
+
+    # 4.2 查找 Tag (为了清理路由)
+    TARGET_TAG=$(jq -r --argjson p "$TARGET_PORT" '.inbounds[] | select(.port == $p) | .tag' "$CONFIG_FILE")
+
+    if [[ -z "$TARGET_TAG" ]] || [[ "$TARGET_TAG" == "null" ]]; then
+        echo -e "${RED}跳过: 找不到端口为 $TARGET_PORT 的节点。${PLAIN}"
+        continue
+    fi
+
+    echo -e "  -> 识别到节点 Tag: ${SKYBLUE}$TARGET_TAG${PLAIN}"
+
+    # 4.3 删除 inbound 节点
+    tmp1=$(mktemp)
+    jq --argjson p "$TARGET_PORT" '.inbounds |= map(select(.port != $p))' "$CONFIG_FILE" > "$tmp1" && mv "$tmp1" "$CONFIG_FILE"
+    echo -e "  -> 节点配置已移除。"
+
+    # 4.4 删除相关的 routing 规则 (级联清理)
+    tmp2=$(mktemp)
+    jq --arg tag "$TARGET_TAG" '.routing.rules |= map(select(.inboundTag | index($tag) | not))' "$CONFIG_FILE" > "$tmp2" && mv "$tmp2" "$CONFIG_FILE"
+    echo -e "  -> 关联路由规则已清理。"
+    
+    ((CHANGE_COUNT++))
+done
+
+echo -e "----------------------------------------"
+
+# 5. 重启服务 (只在有变动时重启)
+if [[ "$CHANGE_COUNT" -gt 0 ]]; then
+    echo -e "${YELLOW}正在重启 Xray 服务以应用 ${CHANGE_COUNT} 个更改...${PLAIN}"
     systemctl restart xray
-    echo -e "已恢复备份。"
+    sleep 1
+
+    if systemctl is-active --quiet xray; then
+        echo -e "${GREEN}========================================${PLAIN}"
+        echo -e "${GREEN}    批量拆除成功！${PLAIN}"
+        echo -e "${GREEN}========================================${PLAIN}"
+        echo -e "当前剩余节点数: $(jq '.inbounds | length' "$CONFIG_FILE")"
+    else
+        echo -e "${RED}重启失败！正在回滚配置...${PLAIN}"
+        cp "$BACKUP_FILE" "$CONFIG_FILE"
+        systemctl restart xray
+        echo -e "已恢复备份。"
+    fi
+else
+    echo -e "${YELLOW}没有进行任何有效更改，无需重启。${PLAIN}"
 fi
