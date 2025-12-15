@@ -60,7 +60,7 @@ tail -n 5 wireproxy.conf
 
 # 5. 下载 WireProxy
 echo -e "${YELLOW}正在下载 WireProxy...${PLAIN}"
-wget -O wireproxy.tar.gz https://github.com/pufferffish/wireproxy/releases/download/v1.0.6/wireproxy_linux_amd64.tar.gz
+wget -O wireproxy.tar.gz https://github.com/pufferffish/wireproxy/releases/download/v1.0.9/wireproxy_linux_amd64.tar.gz
 tar -xzf wireproxy.tar.gz
 mv wireproxy /usr/local/bin/
 rm wireproxy.tar.gz
