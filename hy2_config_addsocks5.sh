@@ -41,7 +41,7 @@ outbounds:
 
 acl:
   inline:
-    - "outbound(warp_lite) / all"
+    - warp_lite(all)
 EOF
 
 echo -e "${GREEN}配置已追加成功！${PLAIN}"
