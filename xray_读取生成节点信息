@@ -1,0 +1,143 @@
+#!/bin/bash
+
+# ============================================================
+#  模块四：节点信息读取与链接生成器 (v2rayN + OpenClash)
+# ============================================================
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+PLAIN='\033[0m'
+
+CONFIG_FILE="/usr/local/etc/xray/config.json"
+XRAY_BIN="/usr/local/bin/xray_core/xray"
+
+# 1. 检查环境
+if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo -e "${RED}错误: 找不到配置文件 $CONFIG_FILE${PLAIN}"
+    exit 1
+fi
+if ! command -v jq &> /dev/null; then
+    echo -e "${YELLOW}安装 jq 解析器...${PLAIN}"
+    apt update -y && apt install -y jq
+fi
+
+# 2. 获取公网 IP
+echo -e "${YELLOW}正在获取公网 IP...${PLAIN}"
+PUBLIC_IP=$(curl -s4 ifconfig.me)
+if [[ -z "$PUBLIC_IP" ]]; then
+    PUBLIC_IP="你的服务器IP"
+fi
+
+echo -e ""
+echo -e "${GREEN}==============================================${PLAIN}"
+echo -e "${GREEN}          当前 Xray 节点配置清单              ${PLAIN}"
+echo -e "${GREEN}==============================================${PLAIN}"
+
+# 3. 循环读取 inbounds 中的每一个节点
+# 使用 jq 将 inbounds 数组转为 base64 逐个处理，防止空格换行问题
+for row in $(jq -r '.inbounds[] | @base64' "$CONFIG_FILE"); do
+    _jq() {
+     echo ${row} | base64 --decode | jq -r ${1}
+    }
+
+    PROTOCOL=$(_jq '.protocol')
+    
+    # 只处理 VLESS 协议
+    if [[ "$PROTOCOL" == "vless" ]]; then
+        PORT=$(_jq '.port')
+        TAG=$(_jq '.tag')
+        UUID=$(_jq '.settings.clients[0].id')
+        FLOW=$(_jq '.settings.clients[0].flow')
+        NETWORK=$(_jq '.streamSettings.network')
+        SECURITY=$(_jq '.streamSettings.security')
+        
+        # 只有 Reality 安全模式才继续
+        if [[ "$SECURITY" == "reality" ]]; then
+            # 读取 Reality 关键参数
+            PRIVATE_KEY=$(_jq '.streamSettings.realitySettings.privateKey')
+            SNI=$(_jq '.streamSettings.realitySettings.serverNames[0]')
+            SHORT_ID=$(_jq '.streamSettings.realitySettings.shortIds[0]')
+            
+            # 兼容性处理：如果 shortId 是 null，设为空字符串
+            if [[ "$SHORT_ID" == "null" ]]; then SHORT_ID=""; fi
+            
+            # 【核心步骤】利用 Xray 核心通过私钥反推公钥
+            PUBLIC_KEY=$($XRAY_BIN x25519 -i "$PRIVATE_KEY" | grep "Public" | awk -F ": " '{print $2}' | tr -d ' \r\n')
+
+            # --- 分类生成链接 ---
+            
+            echo -e "${CYAN}--------------------------------------------------${PLAIN}"
+            echo -e "节点标签: ${YELLOW}${TAG}${PLAIN} | 端口: ${GREEN}${PORT}${PLAIN} | 协议: ${GREEN}${NETWORK}${PLAIN}"
+
+            # >>> 场景 A: TCP + Vision <<<
+            if [[ "$NETWORK" == "tcp" && "$FLOW" == "xtls-rprx-vision" ]]; then
+                LINK="vless://${UUID}@${PUBLIC_IP}:${PORT}?security=reality&encryption=none&pbk=${PUBLIC_KEY}&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=${SNI}&sid=${SHORT_ID}#${TAG}-Vision"
+                
+                echo -e "流控模式: ${GREEN}Vision (已开启)${PLAIN}"
+                echo -e "${YELLOW}➤ v2rayN / v2rayNG 分享链接:${PLAIN}"
+                echo -e "$LINK"
+                
+                # OpenClash YAML 输出
+                echo -e ""
+                echo -e "${YELLOW}➤ OpenClash (Meta内核) 配置参考:${PLAIN}"
+                echo -e "  - name: \"${TAG}-Vision\""
+                echo -e "    type: vless"
+                echo -e "    server: ${PUBLIC_IP}"
+                echo -e "    port: ${PORT}"
+                echo -e "    uuid: ${UUID}"
+                echo -e "    network: tcp"
+                echo -e "    tls: true"
+                echo -e "    udp: true"
+                echo -e "    flow: xtls-rprx-vision"
+                echo -e "    servername: ${SNI}"
+                echo -e "    client-fingerprint: chrome"
+                echo -e "    reality-opts:"
+                echo -e "      public-key: ${PUBLIC_KEY}"
+                if [[ -n "$SHORT_ID" ]]; then
+                    echo -e "      short-id: ${SHORT_ID}"
+                fi
+
+            # >>> 场景 B: XHTTP <<<
+            elif [[ "$NETWORK" == "xhttp" ]]; then
+                # 读取 xhttp 特有参数
+                PATH_VAL=$(_jq '.streamSettings.xhttpSettings.path')
+                MODE_VAL=$(_jq '.streamSettings.xhttpSettings.mode')
+                if [[ "$MODE_VAL" == "null" ]]; then MODE_VAL="auto"; fi
+                
+                # VLESS 链接标准：type=xhttp&path=...&mode=...
+                LINK="vless://${UUID}@${PUBLIC_IP}:${PORT}?security=reality&encryption=none&pbk=${PUBLIC_KEY}&fp=chrome&type=xhttp&path=${PATH_VAL}&mode=${MODE_VAL}&sni=${SNI}&sid=${SHORT_ID}#${TAG}-XHTTP"
+                
+                echo -e "传输模式: ${GREEN}XHTTP${PLAIN}"
+                echo -e "${YELLOW}➤ v2rayN / v2rayNG 分享链接:${PLAIN}"
+                echo -e "$LINK"
+                
+                # OpenClash YAML 输出 (重点修正了 flow 和 格式)
+                echo -e ""
+                echo -e "${YELLOW}➤ OpenClash (Meta内核) 配置参考:${PLAIN}"
+                echo -e "  - name: \"${TAG}-XHTTP\""
+                echo -e "    type: vless"
+                echo -e "    server: ${PUBLIC_IP}"
+                echo -e "    port: ${PORT}"
+                echo -e "    uuid: ${UUID}"
+                echo -e "    network: xhttp"
+                echo -e "    tls: true"
+                echo -e "    udp: true"
+                echo -e "    # flow: 留空 (XHTTP不支持Vision)"
+                echo -e "    servername: ${SNI}"
+                echo -e "    client-fingerprint: chrome"
+                echo -e "    reality-opts:"
+                echo -e "      public-key: ${PUBLIC_KEY}"
+                if [[ -n "$SHORT_ID" ]]; then
+                    echo -e "      short-id: ${SHORT_ID}"
+                fi
+                echo -e "    xhttp-opts:"
+                echo -e "      mode: ${MODE_VAL}"
+                echo -e "      path: ${PATH_VAL}"
+            fi
+        fi
+    fi
+done
+
+echo -e "${CYAN}--------------------------------------------------${PLAIN}"
