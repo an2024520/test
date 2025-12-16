@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Hysteria 2 全能管理脚本 (v3.2 完美版)
-#  - 安装/卸载/管理
-#  - 端口跳跃 (按需安装/一键卸载)
-#  - 出口分流 (Socks5/Warp) 智能挂载
+#  Hysteria 2 全能管理脚本 (v3.3 修复版)
+#  - 修复: 找回 OpenClash 配置输出
+#  - 修复: v2rayN 节点备注显示问题
+#  - 功能: 安装/卸载/端口跳跃/Socks5分流
 # ============================================================
 
 # 颜色定义
@@ -28,12 +28,13 @@ check_root() {
     fi
 }
 
-# --- 辅助功能：节点信息生成 ---
+# --- 辅助功能：节点信息生成 (核心修复部分) ---
 print_node_info() {
     if [[ ! -f "$CONFIG_FILE" ]]; then return; fi
 
     echo -e "\n${YELLOW}正在读取当前配置生成分享链接...${PLAIN}"
     
+    # 读取配置
     local LISTEN=$(grep "^listen:" $CONFIG_FILE | awk '{print $2}' | tr -d ':')
     if [[ -z "$LISTEN" ]]; then
         LISTEN=$(grep "listen:" $CONFIG_FILE | head -n 1 | awk '{print $2}' | tr -d ':')
@@ -42,6 +43,7 @@ print_node_info() {
     local DOMAIN_ACME=$(grep -A 2 "domains:" $CONFIG_FILE | tail -n 1 | tr -d ' -')
     local PASSWORD=$(grep "password:" $CONFIG_FILE | head -n 1 | awk '{print $2}')
     
+    # 状态检测
     local IS_SOCKS5="直连模式"
     if grep -q "# --- SOCKS5 START ---" $CONFIG_FILE; then
         IS_SOCKS5="${SKYBLUE}已挂载 Socks5 代理${PLAIN}"
@@ -52,25 +54,40 @@ print_node_info() {
     local INSECURE="0"
 
     if grep -q "acme:" $CONFIG_FILE; then
+        # ACME 模式
         SHOW_ADDR="$DOMAIN_ACME"
         SNI="$DOMAIN_ACME"
         INSECURE="0"
+        SKIP_CERT_VAL="false"
     else
+        # 自签模式
         SHOW_ADDR=$(curl -s4 ifconfig.me)
         SNI="bing.com"
         INSECURE="1"
+        SKIP_CERT_VAL="true"
     fi
 
+    # 端口显示处理
     local SHOW_PORT="$LISTEN"
+    local OC_PORT="$LISTEN" # OpenClash 专用端口变量
+    local OC_COMMENT=""     # OpenClash 备注
+    
     if [[ -f "$HOPPING_CONF" ]]; then
         source "$HOPPING_CONF"
         if [[ -n "$HOP_RANGE" ]]; then
             SHOW_PORT="$HOP_RANGE"
-            echo -e "${YELLOW}检测到端口跳跃设置，端口显示为范围。${PLAIN}"
+            echo -e "${YELLOW}检测到端口跳跃设置，v2rayN 将显示范围，OpenClash 将使用起始端口。${PLAIN}"
+            
+            # 提取起始端口给 OpenClash (Clash config 通常只能读整数端口)
+            local START_PORT=$(echo $HOP_RANGE | cut -d '-' -f 1)
+            OC_PORT="$START_PORT"
+            OC_COMMENT="# 端口跳跃范围: ${HOP_RANGE} (Clash仅连接其中一个即可)"
         fi
     fi
 
-    local V2RAYN_LINK="hysteria2://${PASSWORD}@${SHOW_ADDR}:${SHOW_PORT}/?sni=${SNI}&insecure=${INSECURE}&name=Hy2-${SHOW_ADDR}"
+    # 生成链接 (使用 # 符号作为备注，修复 v2rayN 别名问题)
+    local NODE_NAME="Hy2-${SHOW_ADDR}"
+    local V2RAYN_LINK="hysteria2://${PASSWORD}@${SHOW_ADDR}:${SHOW_PORT}/?sni=${SNI}&insecure=${INSECURE}#${NODE_NAME}"
 
     echo -e "\n${GREEN}==============================================${PLAIN}"
     echo -e "${GREEN}      Hysteria 2 配置信息 (${IS_SOCKS5})      ${PLAIN}"
@@ -80,9 +97,25 @@ print_node_info() {
     echo -e "密码(Password) : ${YELLOW}${PASSWORD}${PLAIN}"
     echo -e "SNI (伪装)     : ${YELLOW}${SNI}${PLAIN}"
     echo -e "跳过证书验证   : ${YELLOW}$( [[ "$INSECURE" == "1" ]] && echo "True (是)" || echo "False (否)" )${PLAIN}"
+    
+    echo -e "\n${YELLOW}➤ v2rayN / Nekoray 分享链接:${PLAIN}"
     echo -e "----------------------------------------------"
-    echo -e "${YELLOW}➤ v2rayN / Nekoray 分享链接:${PLAIN}"
     echo -e "${V2RAYN_LINK}"
+    echo -e "----------------------------------------------"
+    
+    echo -e "\n${YELLOW}➤ OpenClash / Clash Meta (YAML) 配置:${PLAIN}"
+    echo -e "----------------------------------------------"
+    cat <<EOF
+- name: "${NODE_NAME}"
+  type: hysteria2
+  server: "${SHOW_ADDR}"
+  port: ${OC_PORT}  ${OC_COMMENT}
+  password: "${PASSWORD}"
+  sni: "${SNI}"
+  skip-cert-verify: ${SKIP_CERT_VAL}
+  alpn:
+    - h3
+EOF
     echo -e "----------------------------------------------"
 }
 
@@ -90,7 +123,6 @@ print_node_info() {
 install_base() {
     echo -e "${YELLOW}正在更新系统并安装基础组件...${PLAIN}"
     apt update -y
-    # 移除默认安装 iptables，只保留基础工具
     apt install -y curl wget openssl jq socat
 }
 
@@ -113,7 +145,6 @@ check_and_install_iptables() {
     if ! command -v iptables &> /dev/null; then
         echo -e "${YELLOW}检测到需要端口跳跃但未安装 iptables，正在安装...${PLAIN}"
         apt install -y iptables iptables-persistent netfilter-persistent
-        
         if ! grep -q "net.ipv4.ip_forward=1" /etc/sysctl.conf; then
             echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
             sysctl -p
@@ -333,7 +364,7 @@ detach_socks5() {
     fi
 }
 
-# --- 6. (新增) 卸载 Iptables 逻辑 ---
+# --- 6. 卸载 Iptables 逻辑 ---
 uninstall_iptables() {
     echo -e "${RED}==============================================${PLAIN}"
     echo -e "${RED}    警告: 正在卸载 Iptables 及端口跳跃功能    ${PLAIN}"
@@ -347,7 +378,6 @@ uninstall_iptables() {
     [[ "$CONFIRM" != "y" ]] && return
 
     echo -e "${YELLOW}步骤 1/3: 正在清除防火墙规则...${PLAIN}"
-    # 清空 NAT 表和普通表，保证卸载后无残留规则
     iptables -P INPUT ACCEPT
     iptables -P FORWARD ACCEPT
     iptables -P OUTPUT ACCEPT
@@ -357,10 +387,7 @@ uninstall_iptables() {
     iptables -X
     
     echo -e "${YELLOW}步骤 2/3: 正在卸载相关组件...${PLAIN}"
-    # 停止服务
     systemctl stop netfilter-persistent 2>/dev/null
-    
-    # 卸载包 (purge 会连配置文件一起删，更干净)
     apt remove -y iptables iptables-persistent netfilter-persistent
     apt autoremove -y
     
@@ -404,7 +431,6 @@ uninstall_hy2() {
     systemctl disable hysteria-server
     rm -f /etc/systemd/system/hysteria-server.service
     
-    # 清理 iptables 规则 (但不卸载软件，除非用户去菜单7)
     iptables -t nat -F PREROUTING 2>/dev/null
     if command -v netfilter-persistent &> /dev/null; then
          netfilter-persistent save
@@ -421,7 +447,7 @@ while true; do
     check_root
     clear
     echo -e "${GREEN}========================================${PLAIN}"
-    echo -e "${GREEN}    Hysteria 2 一键管理脚本 (v3.2)      ${PLAIN}"
+    echo -e "${GREEN}    Hysteria 2 一键管理脚本 (v3.3)      ${PLAIN}"
     echo -e "${GREEN}========================================${PLAIN}"
     echo -e "  1. 安装 - ${YELLOW}自签名证书${PLAIN} (无域名/直连)"
     echo -e "  2. 安装 - ${GREEN}ACME 证书${PLAIN} (有域名/直连)"
