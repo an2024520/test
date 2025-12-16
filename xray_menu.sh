@@ -1,7 +1,7 @@
 #!/bin/bash
-echo -e "开始下载所有所需脚本。"
+
 # ============================================================
-#  模块零：Xray 模块化总管 (Commander)
+#  模块零：Xray 模块化总管 (Commander v2.0)
 # ============================================================
 
 # 颜色定义
@@ -11,74 +11,191 @@ YELLOW='\033[0;33m'
 SKYBLUE='\033[0;36m'
 PLAIN='\033[0m'
 
+# --- 脚本文件名与下载地址映射 ---
+# 核心与环境
+FILE_CORE="xray_core.sh"
+URL_CORE="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_core.sh"
 
-# 定义各模块脚本的文件名 (请根据你实际保存的文件名修改这里)
-# 建议你把之前的脚本都重命名为下面这样，或者修改这里的变量
-SCRIPT_CORE="xray_core.sh"                  # 模块一
-SCRIPT_ADD_XHTTP="xray_vless_xhttp.sh"      # 模块二
-SCRIPT_ADD_VISION="xray_vless_vision.sh"    # 模块三
-SCRIPT_REMOVE="xray_module4_remove.sh"      # 模块四
-SCRIPT_BOOST="xray_module5_boost.sh"        # 模块五
-SCRIPT_ATTACH="xray_module6_attach_warp.sh" # 模块六
-SCRIPT_DETACH="xray_module7_detach_warp.sh" # 模块七
+FILE_WARP="warp_wireproxy_socks5.sh"
+URL_WARP="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/warp/warp_wireproxy_socks5.sh"
 
-# 检查脚本是否存在的函数
+# 节点增加
+FILE_ADD_XHTTP="xray_vless_xhttp_reality.sh"
+URL_ADD_XHTTP="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_vless_xhttp_reality.sh"
+
+FILE_ADD_VISION="xray_vless_vision_reality.sh"
+URL_ADD_VISION="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_vless_vision_reality.sh"
+
+# 节点删除与查看
+FILE_NODE_DEL="xray_module_node_del.sh"
+URL_NODE_DEL="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_module_node_del.sh"
+
+FILE_NODE_INFO="xray_get_node_details.sh"
+URL_NODE_INFO="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray_get_node_details.sh"
+
+# 流量挂载
+FILE_ATTACH="xray_module_attach_warp.sh"
+URL_ATTACH="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_module_attach_warp.sh"
+
+FILE_DETACH="xray_module_detach_warp.sh"
+URL_DETACH="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_module_detach_warp.sh"
+
+# 系统优化
+FILE_BOOST="xray_module_boost.sh"
+URL_BOOST="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_module_boost.sh"
+
+# 全局卸载 (本地生成，或者你可以上传这个新脚本到仓库)
+FILE_UNINSTALL="xray_uninstall_all.sh"
+# 如果你上传了该脚本，请替换下面的 URL；这里暂时假设它在本地生成或后续下载
+URL_UNINSTALL="" 
+
+# --- 核心函数：检查并运行 ---
 check_run() {
-    if [[ -f "$1" ]]; then
-        chmod +x "$1"
-        ./"$1"
-    else
+    local script_name="$1"
+    local script_url="$2"
 
-        echo -e "${RED}错误: 找不到脚本文件 [$1]${PLAIN}"
-        echo -e "请确保所有模块脚本都在当前目录下。"
-        echo -e "开始下载所有所需脚本。"
-        wget -O xray_core.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/%E5%9C%B0%E5%9F%BA_xray_core
-        wget -O xray_vless_xhttp.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray%E6%A8%A1%E5%9D%97_vless%2Bxhttp%2Breality.sh
-        wget -O xray_vless_vision.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray%E6%A8%A1%E5%9D%97_vless_tcp_reality_Vision
-        wget -O xray_module4_remove.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray_%E5%88%A0%E9%99%A4%E8%8A%82%E7%82%B9%E4%BB%A5%E5%8F%8A%E5%AF%B9%E5%BA%94%E8%B7%AF%E7%94%B1%E8%A7%84%E5%88%99.sh
-        wget -O xray_module5_boost.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray_BBR%20%2B%20ECN%20%2B%20%E5%86%85%E6%A0%B8%E4%BC%98%E5%8C%96
-        wget -O xray_module6_attach_warp.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray_%E7%BB%99%E8%8A%82%E7%82%B9%E5%A5%97%E4%B8%8A%E6%9C%AC%E5%9C%B0SOCKS5.sh
-        wget -O xray_module7_detach_warp.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray_%E5%8F%96%E6%B6%88%E8%8A%82%E7%82%B9%E7%9A%84socks5%E5%87%BA%E5%8F%A3.sh
-
-        read -p "按回车键返回菜单..."
+    if [[ ! -f "$script_name" ]]; then
+        echo -e "${YELLOW}脚本 [$script_name] 不存在，正在尝试下载...${PLAIN}"
+        if [[ -z "$script_url" ]]; then
+            echo -e "${RED}错误: 未定义下载地址，且本地文件不存在。${PLAIN}"
+            read -p "按回车键返回..."
+            return
+        fi
+        
+        wget -O "$script_name" "$script_url"
+        
+        if [[ $? -ne 0 ]]; then
+            echo -e "${RED}下载失败！请检查网络或 URL。${PLAIN}"
+            read -p "按回车键返回..."
+            return
+        fi
+        echo -e "${GREEN}下载成功！${PLAIN}"
     fi
+
+    chmod +x "$script_name"
+    ./"$script_name"
+    
+    # 执行完脚本后，暂停一下给用户看结果
+    echo -e ""
+    read -p "操作结束，按回车键继续..."
 }
 
+# --- 菜单生成器 ---
 while true; do
     clear
     echo -e "${GREEN}========================================${PLAIN}"
-    echo -e "${GREEN}    Xray 模块化管理系统 (The Modular)    ${PLAIN}"
+    echo -e "${GREEN}    Xray 模块化管理系统 (Commander v2)   ${PLAIN}"
     echo -e "${GREEN}========================================${PLAIN}"
-    echo -e "${YELLOW}--- 基础建设 ---${PLAIN}"
-    echo -e "  1. 安装/重置 Xray 核心环境 (模块一)"
-    echo -e "  2. 系统内核加速 BBR+ECN    (模块五)"
+    echo -e "${SKYBLUE}1.${PLAIN} 前置安装 / 环境重置"
+    echo -e "${SKYBLUE}2.${PLAIN} 节点管理 (新增 / 删除 / 查看)"
+    echo -e "${SKYBLUE}3.${PLAIN} 出口分流 (Warp / Socks5)"
+    echo -e "${SKYBLUE}4.${PLAIN} 系统内核加速 (BBR + ECN)"
+    echo -e "${RED}5.${PLAIN} 彻底卸载 Xray 服务"
+    echo -e "----------------------------------------"
+    echo -e "${GRAY}0. 退出系统${PLAIN}"
     echo -e ""
-    echo -e "${YELLOW}--- 节点管理 (增/删) ---${PLAIN}"
-    echo -e "  3. 添加 VLESS-XHTTP 节点   (模块二 - 穿透)"
-    echo -e "  4. 添加 VLESS-Vision 节点  (模块三 - 稳定)"
-    echo -e "  5. ${RED}删除/清空 节点           (模块四)${PLAIN}"
-    echo -e ""
-    echo -e "${YELLOW}--- 流量控制 (挂/卸) ---${PLAIN}"
-    echo -e "  6. 挂载 WARP/Socks5 出口   (模块六 - 解锁)"
-    echo -e "  7. 恢复 直连模式           (模块七 - 极速)"
-    echo -e ""
-    echo -e "${GRAY}----------------------------------------${PLAIN}"
-    echo -e "  0. 退出系统"
-    echo -e ""
-    read -p "请选择操作 [0-7]: " choice
+    read -p "请选择操作 [0-5]: " main_choice
 
-    case "$choice" in
-        1) check_run "$SCRIPT_CORE" ;;
-        2) check_run "$SCRIPT_BOOST" ;;
-        3) check_run "$SCRIPT_ADD_XHTTP" ;;
-        4) check_run "$SCRIPT_ADD_VISION" ;;
-        5) check_run "$SCRIPT_REMOVE" ;;
-        6) check_run "$SCRIPT_ATTACH" ;;
-        7) check_run "$SCRIPT_DETACH" ;;
-        0) exit 0 ;;
-        *) echo -e "${RED}无效输入，请重试。${PLAIN}"; sleep 1 ;;
+    case "$main_choice" in
+        1)
+            # 子菜单：前置安装
+            while true; do
+                clear
+                echo -e "${YELLOW}>>> 子菜单：前置安装与环境${PLAIN}"
+                echo -e "  1. 安装/重置 Xray 核心环境 (Core)"
+                echo -e "  2. 管理 Warp/WireProxy 代理服务 (安装/卸载)"
+                echo -e "  0. 返回上一级"
+                echo -e ""
+                read -p "请选择: " sub_choice_1
+                case "$sub_choice_1" in
+                    1) check_run "$FILE_CORE" "$URL_CORE" ;;
+                    2) check_run "$FILE_WARP" "$URL_WARP" ;;
+                    0) break ;;
+                    *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
+                esac
+            done
+            ;;
+        2)
+            # 子菜单：节点管理
+            while true; do
+                clear
+                echo -e "${YELLOW}>>> 子菜单：节点管理${PLAIN}"
+                echo -e "  1. 新增节点: VLESS-XHTTP (Reality - 穿透强)"
+                echo -e "  2. 新增节点: VLESS-Vision (Reality - 极稳定)"
+                echo -e "  3. 查看当前节点信息/分享链接"
+                echo -e "  4. ${RED}删除/清空 节点${PLAIN}"
+                echo -e "  0. 返回上一级"
+                echo -e ""
+                read -p "请选择: " sub_choice_2
+                case "$sub_choice_2" in
+                    1) check_run "$FILE_ADD_XHTTP" "$URL_ADD_XHTTP" ;;
+                    2) check_run "$FILE_ADD_VISION" "$URL_ADD_VISION" ;;
+                    3) check_run "$FILE_NODE_INFO" "$URL_NODE_INFO" ;;
+                    4) check_run "$FILE_NODE_DEL" "$URL_NODE_DEL" ;;
+                    0) break ;;
+                    *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
+                esac
+            done
+            ;;
+        3)
+            # 子菜单：出口分流
+            while true; do
+                clear
+                echo -e "${YELLOW}>>> 子菜单：流量出口控制${PLAIN}"
+                echo -e "  1. 挂载 WARP/Socks5 (解锁流媒体/ChatGPT)"
+                echo -e "  2. 解除 挂载 (恢复直连/原生IP)"
+                echo -e "  0. 返回上一级"
+                echo -e ""
+                read -p "请选择: " sub_choice_3
+                case "$sub_choice_3" in
+                    1) check_run "$FILE_ATTACH" "$URL_ATTACH" ;;
+                    2) check_run "$FILE_DETACH" "$URL_DETACH" ;;
+                    0) break ;;
+                    *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
+                esac
+            done
+            ;;
+        4)
+            # 直接运行加速
+            check_run "$FILE_BOOST" "$URL_BOOST"
+            ;;
+        5)
+            # 全局卸载
+            # 如果本地没有卸载脚本，这里临时生成一个简单的，或者你可以上传到git后填入URL
+            if [[ ! -f "$FILE_UNINSTALL" ]]; then
+                cat <<EOF > "$FILE_UNINSTALL"
+#!/bin/bash
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+PLAIN='\033[0m'
+echo -e "\${RED}警告: 即将删除 Xray 所有组件！\${PLAIN}"
+read -p "确认继续? (y/n): " confirm
+if [[ "\$confirm" == "y" ]]; then
+    systemctl stop xray
+    systemctl disable xray
+    rm -rf /usr/local/bin/xray_core
+    rm -rf /usr/local/etc/xray
+    rm -rf /var/log/xray
+    rm -f /etc/systemd/system/xray.service
+    systemctl daemon-reload
+    echo -e "\${GREEN}Xray 已彻底卸载。\${PLAIN}"
+else
+    echo "操作取消"
+fi
+EOF
+                chmod +x "$FILE_UNINSTALL"
+            fi
+            ./"$FILE_UNINSTALL"
+            echo -e ""
+            read -p "操作结束，按回车键继续..."
+            ;;
+        0)
+            echo -e "再见！"
+            exit 0
+            ;;
+        *)
+            echo -e "${RED}无效输入，请重试。${PLAIN}"
+            sleep 1
+            ;;
     esac
-    
-    echo -e ""
-    read -p "操作完成，按回车键返回主菜单..."
 done
