@@ -112,13 +112,10 @@ if ! curl -s -I --max-time 5 "https://$SNI" >/dev/null; then
     [[ "$FORCE" != "y" ]] && exit 1
 fi
 
-# 4. 生成密钥 (修复点：使用 Xray 自带命令生成 UUID)
+# 4. 生成密钥 (使用 Xray 生成 UUID)
 echo -e "${YELLOW}正在生成密钥...${PLAIN}"
 
-# --- 修复：使用 Xray 生成 UUID ---
 UUID=$($XRAY_BIN uuid)
-# -------------------------------
-
 SHORT_ID=$(openssl rand -hex 4)
 XHTTP_PATH="/$(openssl rand -hex 4)"
 RAW_KEYS=$($XRAY_BIN x25519)
@@ -186,9 +183,32 @@ if systemctl is-active --quiet xray; then
     echo -e "SNI (伪装)  : ${YELLOW}${SNI}${PLAIN}"
     echo -e "传输协议    : xhttp"
     echo -e "----------------------------------------"
-    echo -e "🚀 [分享链接]:"
+    echo -e "🚀 [v2rayN 分享链接]:"
     echo -e "${YELLOW}${SHARE_LINK}${PLAIN}"
     echo -e "----------------------------------------"
+    
+    # === 新增：OpenClash 输出 ===
+    echo -e "🐱 [OpenClash / Meta 配置块]:"
+    echo -e "${YELLOW}"
+    cat <<EOF
+- name: "${NODE_NAME}"
+  type: vless
+  server: ${PUBLIC_IP}
+  port: ${PORT}
+  uuid: ${UUID}
+  network: xhttp
+  tls: true
+  udp: true
+  servername: ${SNI}
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: ${PUBLIC_KEY}
+    short-id: ${SHORT_ID}
+  xhttp-opts:
+    mode: auto
+    path: ${XHTTP_PATH}
+EOF
+    echo -e "${PLAIN}----------------------------------------"
 else
     echo -e "${RED}启动失败！配置可能存在冲突。${PLAIN}"
     echo -e "请检查日志: journalctl -u xray -e"
