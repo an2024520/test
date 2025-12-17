@@ -1,0 +1,16 @@
+#!/bin/sh
+# 针对纯 IPv6 VPS 的修正版
+
+SERVICE_FILE="/etc/init.d/cloudflared"
+
+echo "正在停止 cloudflared..."
+rc-service cloudflared stop
+
+echo "正在修改协议为 http2 (TCP模式)..."
+# 确保只添加协议参数，不强制IP版本
+sed -i 's/tunnel run/tunnel run --protocol http2/g' "$SERVICE_FILE"
+
+echo "正在重启 cloudflared..."
+rc-service cloudflared start
+
+echo "✅ 修改完成！Tunnel 现在运行在 http2 模式下，应该会比 QUIC 更稳。"
