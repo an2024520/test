@@ -1,40 +1,73 @@
-#!/bin/bash
+#!/bin/sh
 
-# ==========================================
-# 颜色定义
-RED="\033[31m"
-GREEN="\033[32m"
-YELLOW="\033[33m"
-PLAIN="\033[0m"
+# 定义颜色
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
 
-echo -e "${GREEN}开始运行 Xray 安装脚本...${PLAIN}"
+echo -e "${GREEN}=== Cloudflare Tunnel 后端 Xray 部署脚本 (Alpine版) ===${NC}"
 
-# 1. 安装必要的工具
-echo -e "${YELLOW}正在安装 curl 和 wget...${PLAIN}"
-apt-get update -y && apt-get install -y curl wget unzip
+# 1. 检查 Root 权限
+if [ "$(id -u)" -ne 0 ]; then
+    echo -e "${RED}请使用 root 用户运行此脚本。${NC}"
+    exit 1
+fi
 
-# 2. 获取或生成 UUID
-# 如果之前已经生成过，可以手动填在这里，否则自动生成
+# 2. 检查 Xray 二进制文件
+XRAY_BIN="/usr/local/bin/xray"
+if [ ! -f "$XRAY_BIN" ]; then
+    echo -e "${RED}未找到 Xray 文件！${NC}"
+    echo -e "请确认您已经安装了之前的 icmp9 脚本，或者 Xray 是否位于 /usr/local/bin/xray"
+    exit 1
+fi
+
+# 3. 获取用户自定义配置
+echo ""
+echo -e "${YELLOW}--- 配置参数 ---${NC}"
+
+# 设置端口
+read -p "请输入本地监听端口 [默认: 10086]: " PORT
+PORT=${PORT:-10086}
+
+# 设置 WebSocket 路径
+read -p "请输入 WebSocket 路径 [默认: /myway]: " WSPATH
+WSPATH=${WSPATH:-/myway}
+# 确保路径以 / 开头
+case "$WSPATH" in
+    /*) ;;
+    *) WSPATH="/$WSPATH" ;;
+esac
+
+# 生成 UUID
 UUID=$(cat /proc/sys/kernel/random/uuid)
-echo -e "${GREEN}生成的 UUID 是: ${UUID}${PLAIN}"
+echo -e "为您生成的随机 UUID: ${CYAN}$UUID${NC}"
 
-# 3. 安装 Xray (使用官方一键脚本，如果已安装会自动更新/跳过)
-echo -e "${YELLOW}正在下载并安装 Xray 核心...${PLAIN}"
-bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+# 4. 创建配置目录和文件
+CONF_DIR="/etc/xray-server"
+CONF_FILE="$CONF_DIR/config.json"
 
-# 4. 生成 Xray 配置文件 (VLESS + WS)
-# 注意：这里监听 8080 端口，Cloudflare 可以在后台设置回源到这个端口
-echo -e "${YELLOW}正在写入配置文件 /usr/local/etc/xray/config.json...${PLAIN}"
-cat > /usr/local/etc/xray/config.json <<EOF
+echo -e "${YELLOW}正在创建配置文件...${NC}"
+mkdir -p "$CONF_DIR"
+
+cat > "$CONF_FILE" <<EOF
 {
+  "log": {
+    "loglevel": "warning",
+    "access": "/var/log/xray-server.access.log",
+    "error": "/var/log/xray-server.error.log"
+  },
   "inbounds": [
     {
-      "port": 8080,
+      "port": $PORT,
+      "listen": "127.0.0.1",
       "protocol": "vless",
       "settings": {
         "clients": [
           {
-            "id": "${UUID}"
+            "id": "$UUID",
+            "level": 0
           }
         ],
         "decryption": "none"
@@ -42,7 +75,7 @@ cat > /usr/local/etc/xray/config.json <<EOF
       "streamSettings": {
         "network": "ws",
         "wsSettings": {
-          "path": "/"
+          "path": "$WSPATH"
         }
       }
     }
@@ -55,36 +88,63 @@ cat > /usr/local/etc/xray/config.json <<EOF
 }
 EOF
 
-# 5. 重启 Xray 服务
-echo -e "${YELLOW}正在重启 Xray 服务...${PLAIN}"
-systemctl restart xray
-systemctl enable xray
+# 5. 创建 OpenRC 服务脚本
+SERVICE_FILE="/etc/init.d/xray-server"
+echo -e "${YELLOW}正在创建系统服务...${NC}"
 
-# ==========================================
-# 核心修改：输出 v2rayN 和 OpenClash 配置格式
-# ==========================================
+cat > "$SERVICE_FILE" <<EOF
+#!/sbin/openrc-run
 
-# 定义占位符变量
+name="Xray Server"
+description="Xray VLESS WebSocket Server for Cloudflare Tunnel"
+command="$XRAY_BIN"
+command_args="run -c $CONF_FILE"
+command_background="yes"
+pidfile="/run/xray-server.pid"
+output_log="/var/log/xray-server.log"
+error_log="/var/log/xray-server.err"
+
+depend() {
+    need net
+    after firewall
+}
+EOF
+
+chmod +x "$SERVICE_FILE"
+
+# 6. 启动服务
+echo -e "${YELLOW}正在启动服务...${NC}"
+if rc-service xray-server restart; then
+    rc-update add xray-server default >/dev/null 2>&1
+    echo -e "${GREEN}服务启动成功！已设置开机自启。${NC}"
+else
+    echo -e "${RED}服务启动失败，请检查日志。${NC}"
+    exit 1
+fi
+
+# 7. 输出配置信息 (已根据要求修改)
 DOMAIN_PLACEHOLDER="你的CF域名"
+# 这里的端口写死为443，因为 Tunnel 对外通常是 HTTPS 443 端口
+VLESS_LINK="vless://${UUID}@${DOMAIN_PLACEHOLDER}:443?encryption=none&security=tls&sni=${DOMAIN_PLACEHOLDER}&type=ws&host=${DOMAIN_PLACEHOLDER}&path=${WSPATH}#CF_Tunnel"
 
-echo -e "\n"
-echo -e "========================================================"
-echo -e "${GREEN} 🎉  安装成功！请复制以下信息配置客户端 ${PLAIN}"
-echo -e "========================================================"
-echo -e "${RED}注意：请将 '${DOMAIN_PLACEHOLDER}' 替换为你真实绑定的 Cloudflare 域名/优选IP${PLAIN}"
+echo ""
+echo -e "${GREEN}==============================================${NC}"
+echo -e "${GREEN}           🚀 节点信息生成完毕           ${NC}"
+echo -e "${GREEN}==============================================${NC}"
+echo ""
 
-# --- 1. v2rayN 格式 ---
-# 构造标准 VLESS 链接
-# 格式: vless://uuid@host:443?encryption=none&security=tls&sni=host&type=ws&host=host&path=/#别名
-VLESS_LINK="vless://${UUID}@${DOMAIN_PLACEHOLDER}:443?encryption=none&security=tls&sni=${DOMAIN_PLACEHOLDER}&fp=random&type=ws&host=${DOMAIN_PLACEHOLDER}&path=%2F#CF_NODE"
+echo -e "${YELLOW}👉 [Cloudflare Tunnel 必填信息]:${NC}"
+echo -e "   - Service Type : HTTP"
+echo -e "   - URL          : localhost:${PORT}"
+echo ""
 
-echo -e "\n${YELLOW}👉 [1] v2rayN / V2RayNG 格式 (直接导入剪贴板):${PLAIN}"
-echo -e "${GREEN}${VLESS_LINK}${PLAIN}"
+echo -e "${YELLOW}👉 [v2rayN] 格式 (复制下方链接导入):${NC}"
+echo -e "${CYAN}${VLESS_LINK}${NC}"
+echo ""
 
-# --- 2. OpenClash 格式 ---
-echo -e "\n${YELLOW}👉 [2] OpenClash / Clash Meta 格式 (添加到 proxies 下):${PLAIN}"
-cat <<EOF
-  - name: CF_NODE
+echo -e "${YELLOW}👉 [OpenClash] 格式 (复制到 proxies 下方):${NC}"
+cat << EOF
+  - name: CF_Tunnel
     type: vless
     server: ${DOMAIN_PLACEHOLDER}
     port: 443
@@ -96,12 +156,14 @@ cat <<EOF
     network: ws
     servername: ${DOMAIN_PLACEHOLDER}
     ws-opts:
-      path: "/"
+      path: "${WSPATH}"
       headers:
         Host: ${DOMAIN_PLACEHOLDER}
 EOF
 
-echo -e "\n========================================================"
-echo -e "记得在 Cloudflare 后台将 SSL/TLS 设置为 ${YELLOW}Full (Strict)${PLAIN} 或 ${YELLOW}Flexible${PLAIN}"
-echo -e "如果连不上，请检查 VPS 防火墙是否放行了 ${YELLOW}8080${PLAIN} 端口"
-echo -e "========================================================"
+echo ""
+echo -e "${GREEN}==============================================${NC}"
+echo -e "提示："
+echo -e "1. 请在 Cloudflare Tunnel 面板将 ${YELLOW}localhost:${PORT}${NC} 映射到你的域名。"
+echo -e "2. 复制上面的配置后，请将 ${RED}'${DOMAIN_PLACEHOLDER}'${NC} 替换为你 Tunnel 绑定的真实域名。"
+echo -e "${GREEN}==============================================${NC}"
