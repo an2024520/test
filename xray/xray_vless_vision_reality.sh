@@ -16,19 +16,18 @@ XRAY_BIN="/usr/local/bin/xray_core/xray"
 
 echo -e "${GREEN}>>> [模块三] 智能添加节点: VLESS + TCP + Reality + Vision ...${PLAIN}"
 
-# 1. 环境检查 (依赖模块一)
+# 1. 环境检查
 if [[ ! -f "$XRAY_BIN" ]]; then
     echo -e "${RED}错误: 未找到 Xray 核心！请先运行 [模块一] 打地基。${PLAIN}"
     exit 1
 fi
 
-# 检查并安装 jq (为了处理 JSON) 和 openssl (为了生成 ShortId)
 if ! command -v jq &> /dev/null || ! command -v openssl &> /dev/null; then
     echo -e "${YELLOW}检测到缺少必要工具，正在安装 (jq, openssl)...${PLAIN}"
     apt update -y && apt install -y jq openssl
 fi
 
-# 2. 核心逻辑：配置文件初始化
+# 2. 配置文件初始化
 if [[ ! -f "$CONFIG_FILE" ]]; then
     echo -e "${YELLOW}配置文件不存在，由本模块初始化标准骨架...${PLAIN}"
     mkdir -p /usr/local/etc/xray
@@ -66,11 +65,10 @@ EOF
 fi
 
 # 3. 用户配置参数
-# -----------------------------------------------------------
 echo -e "${YELLOW}--- 配置 Vision 节点参数 ---${PLAIN}"
 echo -e "${YELLOW}注意: Vision 协议通常占用 443 端口效果最好，但为了模块共存，你可以自定义。${PLAIN}"
 
-# A. 端口设置 (自动避让逻辑)
+# A. 端口设置
 while true; do
     read -p "请输入监听端口 (推荐 443 或 8443, 默认 8443): " CUSTOM_PORT
     [[ -z "$CUSTOM_PORT" ]] && PORT=8443 && break
@@ -104,19 +102,16 @@ case $SNI_CHOICE in
     *) SNI="www.microsoft.com" ;;
 esac
 
-# 4. 生成密钥 (修复点：使用 Xray 自带命令生成 UUID)
+# 4. 生成密钥 (使用 Xray 生成 UUID)
 echo -e "${YELLOW}正在生成独立密钥...${PLAIN}"
 
-# --- 修复：使用 Xray 生成 UUID，不依赖系统 uuidgen ---
 UUID=$($XRAY_BIN uuid)
-# --------------------------------------------------
-
 SHORT_ID=$(openssl rand -hex 8) 
 RAW_KEYS=$($XRAY_BIN x25519)
 PRIVATE_KEY=$(echo "$RAW_KEYS" | grep "Private" | awk -F ":" '{print $2}' | tr -d ' \r\n')
 PUBLIC_KEY=$(echo "$RAW_KEYS" | grep -E "Password|Public" | awk -F ":" '{print $2}' | tr -d ' \r\n')
 
-# 5. 构建节点 JSON (Vision 特供版)
+# 5. 构建节点 JSON
 echo -e "${YELLOW}正在注入 Vision 节点...${PLAIN}"
 
 NODE_TAG="vless-vision-${PORT}"
@@ -178,9 +173,30 @@ if systemctl is-active --quiet xray; then
     echo -e "监听端口    : ${YELLOW}${PORT}${PLAIN}"
     echo -e "伪装域名    : ${YELLOW}${SNI}${PLAIN}"
     echo -e "----------------------------------------"
-    echo -e "🚀 [分享链接]:"
+    echo -e "🚀 [v2rayN 分享链接]:"
     echo -e "${YELLOW}${SHARE_LINK}${PLAIN}"
     echo -e "----------------------------------------"
+    
+    # === 新增：OpenClash 输出 ===
+    echo -e "🐱 [OpenClash / Meta 配置块]:"
+    echo -e "${YELLOW}"
+    cat <<EOF
+- name: "${NODE_NAME}"
+  type: vless
+  server: ${PUBLIC_IP}
+  port: ${PORT}
+  uuid: ${UUID}
+  network: tcp
+  tls: true
+  udp: true
+  flow: xtls-rprx-vision
+  servername: ${SNI}
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: ${PUBLIC_KEY}
+    short-id: ${SHORT_ID}
+EOF
+    echo -e "${PLAIN}----------------------------------------"
 else
     echo -e "${RED}启动失败！${PLAIN}"
     echo -e "请检查日志: journalctl -u xray -e"
