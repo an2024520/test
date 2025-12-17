@@ -36,7 +36,7 @@ FILE_NODE_DEL="xray_module_node_del.sh"
 URL_NODE_DEL="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_module_node_del.sh"
 
 FILE_NODE_INFO="xray_get_node_details.sh"
-URL_NODE_INFO="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray_get_node_details.sh"
+URL_NODE_INFO="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_get_node_details.sh"
 
 FILE_ATTACH="xray_module_attach_warp.sh"
 URL_ATTACH="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_module_attach_warp.sh"
