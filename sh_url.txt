@@ -9,3 +9,6 @@ xray_get_node_details.sh https://raw.githubusercontent.com/an2024520/test/refs/h
 warp_wireproxy_socks5.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/warp/warp_wireproxy_socks5.sh
 hy2.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/hy2/hy2.sh
 xray_uninstall_all.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_uninstall_all.sh
+xray_vless_ws_tls.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_vless_ws_tls.sh
+xray_vless_ws_tunnel.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_vless_ws_tunnel.sh
+install_cf_tunnel_debian.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/argo/install_cf_tunnel_debian.sh
