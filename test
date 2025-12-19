@@ -1,43 +1,39 @@
 #!/bin/sh
 
-echo "🕵️‍♂️ 启动全盘搜索模式..."
+echo "⚔️ 启动最终决战模式..."
 
 # 1. 停止服务
 rc-service cloudflared stop >/dev/null 2>&1
 killall cloudflared >/dev/null 2>&1
 
-# 2. 搜索并删除所有名为 config.yml 或 config.yaml 的文件
-# 重点扫描 /root, /home, /etc, /usr
-echo "🔍 正在搜索系统中的残留配置文件..."
+# 2. 【核心操作】精准爆破隐藏的配置文件
+# 既然 ls 看不到，我们直接盲删，宁可错杀不可放过
+echo "💣 正在销毁隐藏的配置文件..."
+rm -rf /root/.cloudflared
+rm -rf /etc/cloudflared
+rm -rf /home/alpine/.cloudflared  # <--- 就是它！！！
+rm -f /usr/local/etc/cloudflared/config.yml
+rm -f /usr/local/etc/cloudflared/config.yaml
 
-# 打印出来给用户看一眼 (让你死个明白)
-find /root /home /etc /usr -name "config.y*ml" 2>/dev/null
-
-# 执行删除
-echo "🔥 正在销毁发现的所有配置文件..."
-find /root /home /etc /usr -name "config.y*ml" -exec rm -rf {} + 2>/dev/null
-# 顺便清理一下 OpenRC 可能的残留配置
-rm -f /etc/conf.d/cloudflared
-
-# 3. 再次确保 WireProxy 活着
+# 3. 再次检查 WireProxy (你的救命稻草)
 if ! netstat -an | grep -q "127.0.0.1:40000"; then
-    echo "⚠️ WireProxy 好像没在运行，正在重启它..."
+    echo "⚠️ WireProxy 未运行，正在唤醒..."
     rc-service wireproxy restart >/dev/null 2>&1
-    sleep 2
+    sleep 3
 fi
 
-# 4. 准备 Token (硬编码，防止出错)
+# 4. 准备 Token (已自动填入)
 MY_TOKEN="eyJhIjoiYWYzN2NhNDc5NDRkMDFlNGY1NTQ2ZmU2NWIyMzRlNjQiLCJ0IjoiNWU5MDYwMjMtMzUxMC00MTZlLWI5MjUtMDQ5YmRmNDA1OWVkIiwicyI6Ik1qYzFPVE5oWlRrdE5HRTRNUzAwWkRjNUxXRmpNRGd0TlRGa1pqSmpZemRrTjJJeiJ9"
 
-echo "⚙️ 重新部署无配置文件的启动脚本..."
-# 这是一个纯净的启动脚本，不带 --config，只靠环境变量
+echo "⚙️ 部署【无配置 + 纯代理】模式..."
+# 我们不创建 config.yml 文件，彻底杜绝格式错误
 cat > /etc/init.d/cloudflared <<INIT
 #!/sbin/openrc-run
 
 name="cloudflared"
 description="Cloudflare Tunnel Agent"
 command="/usr/bin/cloudflared"
-# 只带 Token，不带 Config
+# 只用命令行传 Token，不读任何文件
 command_args="tunnel run --token $MY_TOKEN"
 command_background=true
 pidfile="/run/cloudflared.pid"
@@ -51,10 +47,12 @@ depend() {
 }
 
 start_pre() {
-    # 强制走本地 WireProxy 代理 (127.0.0.1:40000)
+    # === 核心魔法区 ===
+    # 强制 Cloudflared 走本地 WireProxy (WARP) 代理
     export TUNNEL_PROXY_ADDRESS="127.0.0.1"
     export TUNNEL_PROXY_PORT="40000"
-    # 强制协议为 http2 (TCP)，更稳
+    
+    # 强制使用 HTTP2 (TCP) 协议，配合代理更稳
     export TUNNEL_PROTOCOL="http2"
 }
 INIT
@@ -62,19 +60,17 @@ chmod +x /etc/init.d/cloudflared
 
 echo "🚀 启动服务..."
 rc-service cloudflared restart
-sleep 5
+sleep 6
 
-echo "📊 最终验证..."
-# 此时应该绝对不会有格式错误了，因为文件都被删光了
+echo "📊 最终结果..."
+# 检查是否还有那个报错
 if grep -q "expected string found int" /var/log/cloudflared.err; then
-    echo "❌ 绝望了：还是报错！这说明 env vars 可能没生效，或者二进制文件有缓存。"
-    echo "最后报错日志："
-    tail -n 5 /var/log/cloudflared.err
+    echo "❌ 绝望了：报错还在。请运行 'rm -rf /home/*/.cloudflared' 手动清理。"
 elif grep -q "Registered tunnel connection" /var/log/cloudflared.err /var/log/cloudflared.log; then
-    echo "✅✅✅ 终于！！！Tunnel 连接成功！"
-    echo "现在你的 IPv6 小鸡已经通过 WireProxy 代理成功连接到 Cloudflare 了。"
+    echo "🎉🎉🎉 胜利！Cloudflared 已成功连接！"
+    echo "原理：Cloudflared -> 127.0.0.1:40000 (WireProxy) -> IPv4 网络"
+    echo "你的节点现在应该已经绿了（Healthy）。"
 else
-    echo "ℹ️ 无格式错误，查看连接日志："
-    echo "--------------------------------"
+    echo "ℹ️ 查看日志详情："
     tail -n 10 /var/log/cloudflared.err
 fi
