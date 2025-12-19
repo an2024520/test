@@ -1,0 +1,84 @@
+cat > fix.sh << 'EOF'
+#!/bin/sh
+
+# 颜色设置
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+NC='\033[0m'
+
+echo -e "${GREEN}=== Cloudflare Tunnel 终极修复脚本 ===${NC}"
+
+# 1. 停止旧服务
+echo "🛑 停止旧服务..."
+rc-service cloudflared stop >/dev/null 2>&1
+killall cloudflared >/dev/null 2>&1
+
+# 2. 交互式输入 Token
+echo ""
+echo -e "${GREEN}请粘贴您的 Cloudflare Tunnel Token:${NC}"
+echo -e "(以 ${RED}eyJh${NC} 开头的长字符串)"
+printf "Token: "
+read -r MY_TOKEN
+
+# 检查 Token
+if [ -z "$MY_TOKEN" ]; then
+    echo -e "${RED}❌ 错误：Token 不能为空！${NC}"
+    exit 1
+fi
+
+if ! echo "$MY_TOKEN" | grep -q "^eyJh"; then
+    echo -e "${RED}⚠️ 警告：Token 格式看起来不对 (不是 eyJh 开头)。${NC}"
+    echo "但我们将继续尝试..."
+fi
+
+# 3. 写入配置文件 (修复 int/string 格式问题)
+echo ""
+echo "⚙️ 写入配置文件 /etc/cloudflared/config.yml ..."
+mkdir -p /etc/cloudflared
+
+# 注意：edge-ip-version 必须加引号 "6"
+cat > /etc/cloudflared/config.yml <<CONFIG
+tunnel: $MY_TOKEN
+edge-ip-version: "6"
+protocol: http2
+logfile: /var/log/cloudflared.log
+loglevel: info
+CONFIG
+
+# 4. 重写启动服务 (强制读取配置文件)
+echo "🔧 修复 OpenRC 启动脚本..."
+cat > /etc/init.d/cloudflared <<INIT
+#!/sbin/openrc-run
+
+name="cloudflared"
+description="Cloudflare Tunnel Agent"
+command="/usr/bin/cloudflared"
+command_args="tunnel run"
+command_background=true
+pidfile="/run/cloudflared.pid"
+output_log="/var/log/cloudflared.log"
+error_log="/var/log/cloudflared.err"
+
+depend() {
+    need net
+    after firewall
+}
+INIT
+chmod +x /etc/init.d/cloudflared
+
+# 5. 启动并验证
+echo "🚀 启动服务..."
+rc-service cloudflared restart
+sleep 5
+
+echo ""
+echo "📊 检查运行状态..."
+if grep -q "Registered tunnel connection" /var/log/cloudflared.err /var/log/cloudflared.log 2>/dev/null; then
+    echo -e "${GREEN}✅✅✅ 恭喜！Tunnel 已成功连接！${NC}"
+    echo "您的节点应该已经恢复正常。"
+else
+    echo -e "${RED}⚠️ 未检测到连接成功标志，请查看下方日志：${NC}"
+    echo "------------------------------------------------"
+    tail -n 10 /var/log/cloudflared.err
+fi
+EOF
