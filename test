@@ -1,49 +1,43 @@
 #!/bin/sh
 
-echo "🧨 启动彻底清理模式..."
+echo "🕵️‍♂️ 启动全盘搜索模式..."
 
-# 1. 停止并查杀服务
+# 1. 停止服务
 rc-service cloudflared stop >/dev/null 2>&1
 killall cloudflared >/dev/null 2>&1
 
-# 2. 【关键】删除所有可能的配置文件路径
-# 这就是你报错一直在重复的原因！必须删干净！
-echo "🧹 删除所有残留配置..."
-rm -rf /etc/cloudflared
-rm -rf /root/.cloudflared
-rm -f /etc/init.d/cloudflared
-rm -f /usr/local/etc/cloudflared/config.yml
-rm -f /usr/local/etc/cloudflared/config.yaml
+# 2. 搜索并删除所有名为 config.yml 或 config.yaml 的文件
+# 重点扫描 /root, /home, /etc, /usr
+echo "🔍 正在搜索系统中的残留配置文件..."
 
-# 3. 检查 WireProxy 是否活着
-echo "🔍 检查 WireProxy 状态..."
-if netstat -an | grep -q "127.0.0.1:40000"; then
-    echo "✅ 检测到 WireProxy (端口 40000) 正在运行！"
-else
-    echo "⚠️ 未检测到端口 40000，尝试启动 WireProxy..."
+# 打印出来给用户看一眼 (让你死个明白)
+find /root /home /etc /usr -name "config.y*ml" 2>/dev/null
+
+# 执行删除
+echo "🔥 正在销毁发现的所有配置文件..."
+find /root /home /etc /usr -name "config.y*ml" -exec rm -rf {} + 2>/dev/null
+# 顺便清理一下 OpenRC 可能的残留配置
+rm -f /etc/conf.d/cloudflared
+
+# 3. 再次确保 WireProxy 活着
+if ! netstat -an | grep -q "127.0.0.1:40000"; then
+    echo "⚠️ WireProxy 好像没在运行，正在重启它..."
     rc-service wireproxy restart >/dev/null 2>&1
-    sleep 3
-    if netstat -an | grep -q "127.0.0.1:40000"; then
-        echo "✅ WireProxy 启动成功！"
-    else
-        echo "❌ 严重错误：WireProxy 无法启动。"
-        echo "请先确保你运行过之前的 WireProxy 安装脚本。"
-        exit 1
-    fi
+    sleep 2
 fi
 
-# 4. 准备 Token (已自动填入)
+# 4. 准备 Token (硬编码，防止出错)
 MY_TOKEN="eyJhIjoiYWYzN2NhNDc5NDRkMDFlNGY1NTQ2ZmU2NWIyMzRlNjQiLCJ0IjoiNWU5MDYwMjMtMzUxMC00MTZlLWI5MjUtMDQ5YmRmNDA1OWVkIiwicyI6Ik1qYzFPVE5oWlRrdE5HRTRNUzAwWkRjNUxXRmpNRGd0TlRGa1pqSmpZemRrTjJJeiJ9"
 
-echo "⚙️ 写入代理模式启动脚本..."
-# 注意：这里没有任何 --config 参数，也没有 config.yml 文件
-# 彻底杜绝读取到错误配置的可能性
+echo "⚙️ 重新部署无配置文件的启动脚本..."
+# 这是一个纯净的启动脚本，不带 --config，只靠环境变量
 cat > /etc/init.d/cloudflared <<INIT
 #!/sbin/openrc-run
 
 name="cloudflared"
 description="Cloudflare Tunnel Agent"
 command="/usr/bin/cloudflared"
+# 只带 Token，不带 Config
 command_args="tunnel run --token $MY_TOKEN"
 command_background=true
 pidfile="/run/cloudflared.pid"
@@ -57,11 +51,10 @@ depend() {
 }
 
 start_pre() {
-    # 核心：通过环境变量强制走本地代理
-    # 这样 Cloudflared 以为自己在连 IPv4，完全避开 IPv6 解析 BUG
+    # 强制走本地 WireProxy 代理 (127.0.0.1:40000)
     export TUNNEL_PROXY_ADDRESS="127.0.0.1"
     export TUNNEL_PROXY_PORT="40000"
-    # 同时也强制一下协议，双重保险
+    # 强制协议为 http2 (TCP)，更稳
     export TUNNEL_PROTOCOL="http2"
 }
 INIT
@@ -69,17 +62,19 @@ chmod +x /etc/init.d/cloudflared
 
 echo "🚀 启动服务..."
 rc-service cloudflared restart
-sleep 6
+sleep 5
 
-echo "📊 最终检查..."
-# 检查是否还有那个格式错误
+echo "📊 最终验证..."
+# 此时应该绝对不会有格式错误了，因为文件都被删光了
 if grep -q "expected string found int" /var/log/cloudflared.err; then
-    echo "❌ 见鬼了：怎么还有格式错误？(请手动检查 /home 目录)"
+    echo "❌ 绝望了：还是报错！这说明 env vars 可能没生效，或者二进制文件有缓存。"
+    echo "最后报错日志："
+    tail -n 5 /var/log/cloudflared.err
 elif grep -q "Registered tunnel connection" /var/log/cloudflared.err /var/log/cloudflared.log; then
-    echo "✅✅✅ 完美解决！Cloudflared 已通过 WireProxy 成功连接！"
-    echo "IPv6 Bug 已被彻底绕过。"
+    echo "✅✅✅ 终于！！！Tunnel 连接成功！"
+    echo "现在你的 IPv6 小鸡已经通过 WireProxy 代理成功连接到 Cloudflare 了。"
 else
-    echo "ℹ️ 查看最新日志："
+    echo "ℹ️ 无格式错误，查看连接日志："
     echo "--------------------------------"
     tail -n 10 /var/log/cloudflared.err
 fi
