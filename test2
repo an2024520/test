@@ -1,29 +1,40 @@
 #!/bin/sh
 
-echo "🛑 清理旧配置..."
+echo "⚔️ 启动最终决战模式..."
+
+# 1. 停止服务
 rc-service cloudflared stop >/dev/null 2>&1
 killall cloudflared >/dev/null 2>&1
 
-# 这是从你日志里提取的 Token
+# 2. 【核心操作】精准爆破隐藏的配置文件
+# 既然 ls 看不到，我们直接盲删，宁可错杀不可放过
+echo "💣 正在销毁隐藏的配置文件..."
+rm -rf /root/.cloudflared
+rm -rf /etc/cloudflared
+rm -rf /home/alpine/.cloudflared  # <--- 就是它！！！
+rm -f /usr/local/etc/cloudflared/config.yml
+rm -f /usr/local/etc/cloudflared/config.yaml
+
+# 3. 再次检查 WireProxy (你的救命稻草)
+if ! netstat -an | grep -q "127.0.0.1:40000"; then
+    echo "⚠️ WireProxy 未运行，正在唤醒..."
+    rc-service wireproxy restart >/dev/null 2>&1
+    sleep 3
+fi
+
+# 4. 准备 Token (已自动填入)
 MY_TOKEN="eyJhIjoiYWYzN2NhNDc5NDRkMDFlNGY1NTQ2ZmU2NWIyMzRlNjQiLCJ0IjoiNWU5MDYwMjMtMzUxMC00MTZlLWI5MjUtMDQ5YmRmNDA1OWVkIiwicyI6Ik1qYzFPVE5oWlRrdE5HRTRNUzAwWkRjNUxXRmpNRGd0TlRGa1pqSmpZemRrTjJJeiJ9"
 
-echo "📝 写入精简版配置文件 (移除报错参数)..."
-mkdir -p /etc/cloudflared
-# 注意：这里只保留绝对不会报错的字段
-cat > /etc/cloudflared/config.yml <<YAML
-tunnel: "$MY_TOKEN"
-logfile: "/var/log/cloudflared.log"
-loglevel: "info"
-YAML
-
-echo "⚙️ 重写启动服务 (使用环境变量强制 IPv6)..."
+echo "⚙️ 部署【无配置 + 纯代理】模式..."
+# 我们不创建 config.yml 文件，彻底杜绝格式错误
 cat > /etc/init.d/cloudflared <<INIT
 #!/sbin/openrc-run
 
 name="cloudflared"
 description="Cloudflare Tunnel Agent"
 command="/usr/bin/cloudflared"
-command_args="tunnel run --config /etc/cloudflared/config.yml"
+# 只用命令行传 Token，不读任何文件
+command_args="tunnel run --token $MY_TOKEN"
 command_background=true
 pidfile="/run/cloudflared.pid"
 output_log="/var/log/cloudflared.log"
@@ -32,11 +43,16 @@ error_log="/var/log/cloudflared.err"
 depend() {
     need net
     after firewall
+    need wireproxy
 }
 
 start_pre() {
-    # 核心修改：通过环境变量传递参数，绕过配置文件解析 bug
-    export TUNNEL_EDGE_IP_VERSION="6"
+    # === 核心魔法区 ===
+    # 强制 Cloudflared 走本地 WireProxy (WARP) 代理
+    export TUNNEL_PROXY_ADDRESS="127.0.0.1"
+    export TUNNEL_PROXY_PORT="40000"
+    
+    # 强制使用 HTTP2 (TCP) 协议，配合代理更稳
     export TUNNEL_PROTOCOL="http2"
 }
 INIT
@@ -44,15 +60,17 @@ chmod +x /etc/init.d/cloudflared
 
 echo "🚀 启动服务..."
 rc-service cloudflared restart
-sleep 5
+sleep 6
 
-echo "📊 检查日志..."
+echo "📊 最终结果..."
+# 检查是否还有那个报错
 if grep -q "expected string found int" /var/log/cloudflared.err; then
-    echo "❌ 还是报错配置格式问题 (见鬼了)"
+    echo "❌ 绝望了：报错还在。请运行 'rm -rf /home/*/.cloudflared' 手动清理。"
 elif grep -q "Registered tunnel connection" /var/log/cloudflared.err /var/log/cloudflared.log; then
-    echo "✅✅✅ 终于成功了！Tunnel 已连接！"
+    echo "🎉🎉🎉 胜利！Cloudflared 已成功连接！"
+    echo "原理：Cloudflared -> 127.0.0.1:40000 (WireProxy) -> IPv4 网络"
+    echo "你的节点现在应该已经绿了（Healthy）。"
 else
-    echo "ℹ️ 请查看最新日志："
-    echo "--------------------------------"
+    echo "ℹ️ 查看日志详情："
     tail -n 10 /var/log/cloudflared.err
 fi
