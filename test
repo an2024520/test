@@ -1,42 +1,36 @@
 #!/bin/sh
 
-echo "🛑 第一步：清理现场..."
-# 停止所有服务，防止冲突
+echo "🛑 第一步：停止旧服务..."
 rc-service cloudflared stop
 killall cloudflared 2>/dev/null
-rm -f /etc/init.d/cloudflared
 
-# 提取 Token (防止丢失)
-# 尝试从之前的残留文件中找 Token
-OLD_TOKEN=$(grep -o "ey[a-zA-Z0-9._-]*" /var/log/cloudflared.log 2>/dev/null | head -n 1)
-# 如果没找到，尝试从 config.yml 找
-if [ -z "$OLD_TOKEN" ]; then
-    OLD_TOKEN=$(grep "tunnel:" /etc/cloudflared/config.yml 2>/dev/null | awk '{print $2}')
-fi
+echo "📝 第二步：请输入 Token..."
+echo "请务必粘贴以 'eyJh' 开头的完整长串："
+read -r MY_TOKEN
 
-# 如果还是没找到，让用户输入
-if [ -z "$OLD_TOKEN" ]; then
-    echo "⚠️ 自动提取 Token 失败。"
-    echo "请手动粘贴你的 Token (eyJh...): "
-    read -r OLD_TOKEN
+# 简单检查 Token 格式
+if echo "$MY_TOKEN" | grep -q "^eyJh"; then
+    echo "✅ Token 格式看起来正确。"
 else
-    echo "✅ 已提取 Token: ${OLD_TOKEN:0:10}..."
+    echo "⚠️ 警告：你输入的 Token 可能不正确 (不是以 eyJh 开头)。"
+    echo "但我们将继续尝试..."
 fi
 
-echo "📝 第二步：写入标准配置文件..."
+echo "⚙️ 第三步：写入修正后的配置文件..."
 mkdir -p /etc/cloudflared
-# 关键点：把所有参数写在这里，而不是放在命令行参数里
+# 核心修正：
+# 1. edge-ip-version 加上了双引号 "6"
+# 2. protocol 保持 http2
 cat > /etc/cloudflared/config.yml <<EOF
-tunnel: $OLD_TOKEN
-edge-ip-version: 6
+tunnel: $MY_TOKEN
+edge-ip-version: "6"
 protocol: http2
 logfile: /var/log/cloudflared.log
 loglevel: info
 EOF
 
-echo "⚙️ 第三步：重写启动脚本 (不带参数)..."
-# 注意：command_args 这里我们留空！只运行 'tunnel run'
-# 这样它就会强制去读 /etc/cloudflared/config.yml
+echo "🚀 第四步：重置服务并启动..."
+# 重写启动脚本，不带任何参数，让它强制读 config.yml
 cat > /etc/init.d/cloudflared <<EOF
 #!/sbin/openrc-run
 
@@ -56,19 +50,18 @@ depend() {
 EOF
 chmod +x /etc/init.d/cloudflared
 
-echo "🚀 第四步：启动并验证..."
+# 启动
 rc-service cloudflared restart
 sleep 5
 
-# 检查日志，看是否成功绕过限制
-if tail -n 10 /var/log/cloudflared.err | grep -q "network is unreachable"; then
-    echo "❌ 失败：依然提示网络不可达 (IPv6 配置未生效)"
-    echo "最后报错信息："
-    tail -n 5 /var/log/cloudflared.err
+echo "📊 最终检查..."
+# 检查是否还有那个类型错误
+if grep -q "expected string found int" /var/log/cloudflared.err; then
+    echo "❌ 失败：依然提示配置格式错误。"
+elif grep -q "Registered tunnel connection" /var/log/cloudflared.err /var/log/cloudflared.log; then
+    echo "✅✅✅ 成功！Tunnel 已注册并连接！"
 else
-    echo "✅ 似乎成功了！正在检查连接日志..."
-    grep "Registered tunnel connection" /var/log/cloudflared.err /var/log/cloudflared.log 2>/dev/null | tail -n 1
-    echo "---------------------------------------------------"
-    echo "请查看上方是否有一行 'Registered tunnel connection'。"
-    echo "如果有，恭喜你，Tunnel 已经打通！"
+    echo "ℹ️ 请查看下方最新日志判断状态："
+    echo "--------------------------------"
+    tail -n 10 /var/log/cloudflared.err
 fi
