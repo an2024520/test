@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ==============================================================================
-# Argosbx 终极净化版 v3.7 (Refactored by Gemini)
+# Argosbx 终极净化版 v3.8 (Refactored by Gemini)
 # 修复日志：
-# v3.7: 💾 回归静态文件存储机制 (彻底修复 List/Key 为空问题) | 增强快捷指令落地
-# v3.6: 修复下载缺失
+# v3.8: 🚑 修复 REP 模式误删目录导致无法写入的致命BUG | 目录创建双重保险
+# v3.7: 静态文件锚定机制
 # ==============================================================================
 
 # --- 1. 全局配置 ---
@@ -12,12 +12,11 @@ export LANG=en_US.UTF-8
 WORKDIR="$HOME/agsbx_clean"
 BIN_DIR="$WORKDIR/bin"
 CONF_DIR="$WORKDIR/conf"
-# 专门存放节点参数的目录，确保 list 读取万无一失
-PARAM_DIR="$CONF_DIR/params"
+PARAM_DIR="$CONF_DIR/params" # 关键参数存储目录
 SCRIPT_PATH="$WORKDIR/agsbx_pure.sh"
 BACKUP_DNS="/etc/resolv.conf.bak.agsbx"
 
-# ⚠️ 快捷指令自更新地址 (请确保此地址是 Raw 格式且可访问)
+# ⚠️ 快捷指令自更新地址
 SELF_URL="https://raw.githubusercontent.com/an2024520/test/main/Argosbx_Pure.sh"
 
 # --- 2. 变量映射 ---
@@ -47,16 +46,16 @@ export ARGO_DOMAIN=${agn:-''}
 # --- 3. 核心初始化 ---
 
 init_variables() {
-    mkdir -p "$BIN_DIR" "$CONF_DIR" "$PARAM_DIR"
+    # 建立所有必要目录
+    mkdir -p "$BIN_DIR" "$CONF_DIR" "$PARAM_DIR" "$CONF_DIR/xrk"
     
-    # 1. UUID 生成 (优先读取静态文件)
+    # 1. UUID 生成
     if [ -s "$PARAM_DIR/uuid" ]; then
         uuid=$(cat "$PARAM_DIR/uuid")
     else
         if [ -z "$uuid" ]; then uuid=$(cat /proc/sys/kernel/random/uuid); fi
         echo "$uuid" > "$PARAM_DIR/uuid"
     fi
-    # 再次读取并清洗
     uuid=$(cat "$PARAM_DIR/uuid" | tr -d '\n\r ')
 
     # 2. 证书生成
@@ -153,12 +152,14 @@ configure_warp_if_needed() {
 
 download_core() {
     if [ ! -s "$BIN_DIR/xray" ]; then
+        echo "⬇️ [Xray] 下载中..."
         local latest=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep "tag_name" | cut -d '"' -f 4)
         wget -qO "$WORKDIR/xray.zip" "https://github.com/XTLS/Xray-core/releases/download/${latest}/Xray-linux-${XRAY_ARCH}.zip"
         unzip -o "$WORKDIR/xray.zip" -d "$WORKDIR/temp_xray" >/dev/null
         mv "$WORKDIR/temp_xray/xray" "$BIN_DIR/xray"; chmod +x "$BIN_DIR/xray"; mv "$WORKDIR/temp_xray/geo"* "$BIN_DIR/" 2>/dev/null; rm -rf "$WORKDIR/xray.zip" "$WORKDIR/temp_xray"
     fi
     if [ ! -s "$BIN_DIR/sing-box" ]; then
+        echo "⬇️ [Sing-box] 下载中..."
         local latest=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep "tag_name" | cut -d '"' -f 4)
         local ver_num=${latest#v}
         wget -qO "$WORKDIR/sb.tar.gz" "https://github.com/SagerNet/sing-box/releases/download/${latest}/sing-box-${ver_num}-linux-${SB_ARCH}.tar.gz"
@@ -166,6 +167,7 @@ download_core() {
         mv "$WORKDIR"/sing-box*linux*/sing-box "$BIN_DIR/sing-box"; chmod +x "$BIN_DIR/sing-box"; rm -rf "$WORKDIR/sb.tar.gz" "$WORKDIR"/sing-box*linux*
     fi
     if [ -n "$ARGO_MODE" ] && [ ! -s "$BIN_DIR/cloudflared" ]; then
+        echo "⬇️ [Cloudflared] 下载中..."
         wget -qO "$BIN_DIR/cloudflared" "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}"
         chmod +x "$BIN_DIR/cloudflared"
     fi
@@ -173,13 +175,17 @@ download_core() {
 
 generate_config() {
     echo "⚙️ 生成配置..."
+    # 🚨 双重保险：确保 PARAM_DIR 存在 (防止被 rep 删除后未重建)
+    mkdir -p "$PARAM_DIR" "$CONF_DIR/xrk"
+
     [ -z "$ym_vl_re" ] && ym_vl_re="apple.com"
     echo "$ym_vl_re" > "$CONF_DIR/ym_vl_re"
 
-    # --- 核心修复：生成 Xray 密钥并永久保存到 PARAM_DIR ---
+    # Xray 密钥
     if [ -n "$vwp" ] || [ -n "$vlp" ]; then
         if [ ! -s "$PARAM_DIR/private_key" ]; then
             "$BIN_DIR/xray" x25519 > "$CONF_DIR/temp_key"
+            # 暴力提取修正
             grep "Private Key" "$CONF_DIR/temp_key" | cut -d: -f2 | tr -d ' \n\r' > "$PARAM_DIR/private_key"
             grep "Public Key" "$CONF_DIR/temp_key" | cut -d: -f2 | tr -d ' \n\r' > "$PARAM_DIR/public_key"
             rm "$CONF_DIR/temp_key"
@@ -192,13 +198,15 @@ generate_config() {
             echo "$vlkey" | grep '"encryption":' | cut -d: -f2 | tr -d ' ",\n\r' > "$PARAM_DIR/enkey"
         fi
         
-        # 赋值给变量供本次使用
+        # 复制到 xrk 目录兼容旧逻辑 (可选，防止部分引用报错)
+        cp "$PARAM_DIR/private_key" "$CONF_DIR/xrk/private_key"
+        
         pk=$(cat "$PARAM_DIR/private_key")
         sid=$(cat "$PARAM_DIR/short_id")
         dekey=$(cat "$PARAM_DIR/dekey")
     fi
 
-    # --- 端口生成并保存 ---
+    # 端口
     open_port() {
         if command -v iptables >/dev/null; then
             iptables -I INPUT -p tcp --dport $1 -j ACCEPT 2>/dev/null
@@ -231,8 +239,13 @@ generate_config() {
         echo "$port_hy2" > "$PARAM_DIR/port_hy2"
         open_port $port_hy2
     fi
+    if [ -n "$tup" ]; then
+        [ -z "$port_tu" ] && [ -s "$PARAM_DIR/port_tu" ] && port_tu=$(cat "$PARAM_DIR/port_tu")
+        [ -z "$port_tu" ] && port_tu=$(shuf -i 10000-65535 -n 1)
+        echo "$port_tu" > "$PARAM_DIR/port_tu"
+        open_port $port_tu
+    fi
 
-    # ... (WARP配置逻辑不变) ...
     ENABLE_WARP=false
     if [ -n "$WARP_MODE" ] && [ -n "$WP_KEY" ]; then
         ENABLE_WARP=true
@@ -293,9 +306,6 @@ EOF
 EOF
     fi
     if [ -n "$tup" ]; then
-        [ -z "$port_tu" ] && port_tu=$(shuf -i 10000-65535 -n 1)
-        echo "$port_tu" > "$PARAM_DIR/port_tu"
-        open_port $port_tu
         cat >> "$CONF_DIR/sb.json" <<EOF
     { "type": "tuic", "tag": "tuic-in", "listen": "::", "listen_port": ${port_tu}, "users": [{ "uuid": "${uuid}", "password": "${uuid}" }], "congestion_control": "bbr", "tls": { "enabled": true, "alpn": ["h3"], "certificate_path": "$CONF_DIR/cert.pem", "key_path": "$CONF_DIR/private.key" } },
 EOF
@@ -385,7 +395,6 @@ restart_services() {
 }
 
 setup_shortcut() {
-    # 强制尝试下载最新版脚本落地
     if [ -n "$SELF_URL" ]; then
         wget -qO "$SCRIPT_PATH" "$SELF_URL" || cp "$0" "$SCRIPT_PATH"
     elif [[ -f "$0" ]]; then
@@ -397,17 +406,16 @@ setup_shortcut() {
     hash -r 2>/dev/null
 }
 
-# --- 9. List 逻辑 (读取静态文件，绝对稳定) ---
+# --- 9. List 逻辑 (静态文件版) ---
 
 cmd_list() {
     get_ip
     echo ""
-    echo "================ [Argosbx 净化版 v3.7] ================"
+    echo "================ [Argosbx 净化版 v3.8] ================"
     echo "  IP: $server_ip"
     
     uuid=$(cat "$PARAM_DIR/uuid" 2>/dev/null | tr -d '\n\r ')
     
-    # Argo
     ARGO_URL=""
     if systemctl is-active --quiet argo-clean; then
         echo "  Argo: ✅ 运行中"
@@ -416,7 +424,6 @@ cmd_list() {
     fi
     echo "------------------------ [v2rayN / 标准链接] ------------------------"
 
-    # Reality
     if [ -s "$PARAM_DIR/port_vl_re" ]; then
         port=$(cat "$PARAM_DIR/port_vl_re" | tr -d '\n\r ')
         pk=$(cat "$PARAM_DIR/public_key" | tr -d '\n\r ')
@@ -425,7 +432,6 @@ cmd_list() {
         REALITY_OC="  - name: Clean-Reality\n    type: vless\n    server: $raw_ip\n    port: $port\n    uuid: $uuid\n    network: tcp\n    tls: true\n    udp: true\n    flow: xtls-rprx-vision\n    servername: $ym_vl_re\n    reality-opts:\n      public-key: $pk\n      short-id: $sid\n    client-fingerprint: chrome"
     fi
 
-    # VMess-WS
     if [ -s "$PARAM_DIR/port_vm_ws" ]; then
         port=$(cat "$PARAM_DIR/port_vm_ws" | tr -d '\n\r ')
         if [ -n "$ARGO_URL" ]; then
@@ -439,11 +445,28 @@ cmd_list() {
         fi
     fi
 
-    # Hysteria2
+    if [ -s "$PARAM_DIR/port_vw" ]; then
+        port=$(cat "$PARAM_DIR/port_vw" | tr -d '\n\r ')
+        enkey=$(cat "$PARAM_DIR/enkey" | tr -d '\n\r ')
+        if [ -n "$ARGO_URL" ]; then
+             echo "🔒 [VLESS-Argo] vless://$uuid@$ARGO_URL:443?encryption=$enkey&security=tls&type=ws&host=$ARGO_URL&path=/$uuid-vw&sni=$ARGO_URL#Clean-VLESS-Argo"
+             VLESS_OC="  - name: Clean-VLESS-Argo\n    type: vless\n    server: $ARGO_URL\n    port: 443\n    uuid: $uuid\n    udp: true\n    tls: true\n    network: ws\n    ws-opts:\n      path: /$uuid-vw\n      headers:\n        Host: $ARGO_URL"
+        else
+             echo "🔒 [VLESS-WS] vless://$uuid@$raw_ip:$port?encryption=$enkey&security=none&type=ws&path=/$uuid-vw#Clean-VLESS-WS"
+             VLESS_OC="  - name: Clean-VLESS-WS\n    type: vless\n    server: $raw_ip\n    port: $port\n    uuid: $uuid\n    udp: true\n    tls: false\n    network: ws\n    ws-opts:\n      path: /$uuid-vw"
+        fi
+    fi
+
     if [ -s "$PARAM_DIR/port_hy2" ]; then
         port=$(cat "$PARAM_DIR/port_hy2" | tr -d '\n\r ')
         echo "🚀 [Hysteria2] hysteria2://$uuid@$raw_ip:$port?security=tls&alpn=h3&insecure=1&sni=www.bing.com#Clean-Hy2"
         HY2_OC="  - name: Clean-Hy2\n    type: hysteria2\n    server: $raw_ip\n    port: $port\n    password: $uuid\n    sni: www.bing.com\n    skip-cert-verify: true\n    alpn:\n      - h3"
+    fi
+    
+    if [ -s "$PARAM_DIR/port_tu" ]; then
+        port=$(cat "$PARAM_DIR/port_tu" | tr -d '\n\r ')
+        echo "🚄 [Tuic] tuic://$uuid:$uuid@$raw_ip:$port?congestion_control=bbr&udp_relay_mode=native&alpn=h3&allow_insecure=1#Clean-Tuic"
+        TUIC_OC="  - name: Clean-Tuic\n    type: tuic\n    server: $raw_ip\n    port: $port\n    uuid: $uuid\n    password: $uuid\n    sni: www.bing.com\n    skip-cert-verify: true\n    alpn: [h3]\n    congestion-controller: bbr"
     fi
 
     echo ""
@@ -451,7 +474,9 @@ cmd_list() {
     echo "proxies:"
     echo -e "$REALITY_OC"
     echo -e "$HY2_OC"
+    echo -e "$TUIC_OC"
     echo -e "$VMESS_OC"
+    echo -e "$VLESS_OC"
     echo "==================================================================="
 }
 
@@ -480,6 +505,7 @@ case "$1" in
     rep)  
         echo "♻️ 重置配置..."
         echo "⚠️ 注意：增加协议请带上所有变量！"
+        # 修复：先删除，紧接着在 generate_config 中会重建
         rm -rf "$CONF_DIR"/*.json "$CONF_DIR"/port* "$PARAM_DIR"
         configure_argo_if_needed
         configure_warp_if_needed
@@ -490,7 +516,7 @@ case "$1" in
         cmd_list
         ;;
     *)
-        echo ">>> 开始安装 Argosbx 净化版 v3.7..."
+        echo ">>> 开始安装 Argosbx 净化版 v3.8..."
         configure_argo_if_needed
         configure_warp_if_needed
         download_core
