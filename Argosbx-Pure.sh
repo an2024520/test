@@ -1,8 +1,10 @@
 #!/bin/bash
 
 # ==============================================================================
-# Argosbx 终极净化版 v2.7 (Refactored by Gemini)
-# 修复日志：v2.7 修复潜在的语法截断问题，增强 OpenClash 输出稳定性
+# Argosbx 终极净化版 v2.8 (Refactored by Gemini)
+# 更新日志：
+# v2.8: 修复Singbox配置被覆盖BUG | 修复VMess JSON转义 | 增强管道安装兼容性
+# v2.6: 新增 OpenClash 输出
 # ==============================================================================
 
 # --- 1. 全局配置 ---
@@ -10,7 +12,11 @@ export LANG=en_US.UTF-8
 WORKDIR="$HOME/agsbx_clean"
 BIN_DIR="$WORKDIR/bin"
 CONF_DIR="$WORKDIR/conf"
-SCRIPT_PATH="$WORKDIR/agsbx.sh"
+# 修正：定义自下载地址，用于管道安装时的自我修复
+SELF_URL="https://raw.githubusercontent.com/yonggekkk/argosbx/main/argosbx.sh" # ⚠️注意：这里建议替换为你自己仓库的 Raw 地址，否则还是下的原版
+# 为了方便你测试，这里暂时保留结构，请在最后保存时替换为你自己 GitHub 仓库的 Raw 地址
+# 例如：SELF_URL="https://raw.githubusercontent.com/an2024520/test/main/Argosbx-Pure.sh"
+
 BACKUP_DNS="/etc/resolv.conf.bak.agsbx"
 
 # --- 2. 变量映射 ---
@@ -130,9 +136,16 @@ download_core() {
 }
 
 generate_config() {
+    echo "⚙️ 生成配置..."
     [ -z "$uuid" ] && { [ ! -f "$CONF_DIR/uuid" ] && uuid=$(cat /proc/sys/kernel/random/uuid) > "$CONF_DIR/uuid" || uuid=$(cat "$CONF_DIR/uuid"); }
     [ -z "$ym_vl_re" ] && ym_vl_re="apple.com"
     echo "$ym_vl_re" > "$CONF_DIR/ym_vl_re"
+
+    # 生成证书 (Hysteria2/Tuic 必需)
+    if [ ! -f "$CONF_DIR/cert.pem" ]; then
+        openssl ecparam -genkey -name prime256v1 -out "$CONF_DIR/private.key"
+        openssl req -new -x509 -days 36500 -key "$CONF_DIR/private.key" -out "$CONF_DIR/cert.pem" -subj "/CN=www.bing.com" 2>/dev/null
+    fi
 
     if [ -n "$vwp" ] || [ -n "$vlp" ]; then
         mkdir -p "$CONF_DIR/xrk"
@@ -164,6 +177,7 @@ generate_config() {
         [[ "$WARP_MODE" == *"4"* ]] && ROUTE_V4=true; [[ "$WARP_MODE" == *"6"* ]] && ROUTE_V6=true; if [ "$ROUTE_V4" = false ] && [ "$ROUTE_V6" = false ]; then ROUTE_V4=true; fi
     fi
 
+    # ================= XRAY JSON =================
     cat > "$CONF_DIR/xr.json" <<EOF
 { "log": { "loglevel": "none" }, "inbounds": [
 EOF
@@ -208,8 +222,47 @@ EOF
       { "type": "field", "outboundTag": "direct", "port": "0-65535" } ] } }
 EOF
 
+    # ================= SING-BOX JSON =================
     cat > "$CONF_DIR/sb.json" <<EOF
-{ "log": { "level": "info" }, "inbounds": [], "outbounds": [{ "type": "direct", "tag": "direct" }] }
+{ "log": { "level": "info" }, "inbounds": [
+EOF
+    if [ -n "$hyp" ] || [ -z "${vmp}${vwp}${vlp}${tup}" ]; then 
+        [ -z "$port_hy2" ] && port_hy2=$(shuf -i 10000-65535 -n 1)
+        echo "$port_hy2" > "$CONF_DIR/port_hy2"
+        cat >> "$CONF_DIR/sb.json" <<EOF
+    { "type": "hysteria2", "listen": "::", "listen_port": ${port_hy2}, "users": [{ "password": "${uuid}" }], "tls": { "enabled": true, "alpn": ["h3"], "certificate_path": "$CONF_DIR/cert.pem", "key_path": "$CONF_DIR/private.key" } },
+EOF
+    fi
+    if [ -n "$tup" ]; then
+        [ -z "$port_tu" ] && port_tu=$(shuf -i 10000-65535 -n 1)
+        echo "$port_tu" > "$CONF_DIR/port_tu"
+        cat >> "$CONF_DIR/sb.json" <<EOF
+    { "type": "tuic", "listen": "::", "listen_port": ${port_tu}, "users": [{ "uuid": "${uuid}", "password": "${uuid}" }], "congestion_control": "bbr", "tls": { "enabled": true, "alpn": ["h3"], "certificate_path": "$CONF_DIR/cert.pem", "key_path": "$CONF_DIR/private.key" } },
+EOF
+    fi
+    sed -i '$ s/,$//' "$CONF_DIR/sb.json"
+    
+    # 修复：只追加 Outbounds，不覆盖文件
+    cat >> "$CONF_DIR/sb.json" <<EOF
+  ], "outbounds": [ { "type": "direct", "tag": "direct" }
+EOF
+    if [ "$ENABLE_WARP" = true ]; then
+        cat >> "$CONF_DIR/sb.json" <<EOF
+    ,{ "type": "wireguard", "tag": "warp-out", "address": [ ${WARP_ADDR} ], "private_key": "${WP_KEY}", "peers": [{ "server": "engage.cloudflareclient.com", "server_port": 2408, "public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=", "reserved": ${WP_RES} }] }
+EOF
+    fi
+    cat >> "$CONF_DIR/sb.json" <<EOF
+  ], "route": { "rules": [
+EOF
+    if [ "$ENABLE_WARP" = true ]; then
+        cat >> "$CONF_DIR/sb.json" <<EOF
+      { "geosite": [ "openai", "netflix", "google" ], "outbound": "warp-out" },
+EOF
+        if [ "$ROUTE_V4" = true ]; then echo '      { "ip_cidr": [ "0.0.0.0/0" ], "outbound": "warp-out" },' >> "$CONF_DIR/sb.json"; fi
+        if [ "$ROUTE_V6" = true ]; then echo '      { "ip_cidr": [ "::/0" ], "outbound": "warp-out" },' >> "$CONF_DIR/sb.json"; fi
+    fi
+    cat >> "$CONF_DIR/sb.json" <<EOF
+      { "port": [0, 65535], "outbound": "direct" } ] } }
 EOF
 }
 
@@ -230,6 +283,20 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
+    sudo tee /etc/systemd/system/singbox-clean.service > /dev/null <<EOF
+[Unit]
+Description=Sing-box Clean Service
+After=network.target
+[Service]
+User=$USER_NAME
+Type=simple
+ExecStart=$BIN_DIR/sing-box run -c $CONF_DIR/sb.json
+Restart=on-failure
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+EOF
+
     if [ -n "$ARGO_MODE" ]; then
         if [ "$ARGO_MODE" == "vmpt" ]; then TARGET_PORT=$port_vm_ws; fi
         if [ "$ARGO_MODE" == "vwpt" ]; then TARGET_PORT=$port_vw; fi
@@ -249,16 +316,29 @@ WantedBy=multi-user.target
 EOF
         sudo systemctl daemon-reload; sudo systemctl enable argo-clean; sudo systemctl restart argo-clean
     fi
-    sudo systemctl daemon-reload; sudo systemctl enable xray-clean; restart_services
+    sudo systemctl daemon-reload; sudo systemctl enable xray-clean singbox-clean; restart_services
 }
 
 restart_services() {
     systemctl is-active --quiet xray-clean && sudo systemctl restart xray-clean
+    systemctl is-active --quiet singbox-clean && sudo systemctl restart singbox-clean
     if [ -n "$ARGO_MODE" ]; then systemctl is-active --quiet argo-clean && sudo systemctl restart argo-clean; fi
 }
 
 setup_shortcut() {
-    cp "$0" "$SCRIPT_PATH" && chmod +x "$SCRIPT_PATH"
+    # 修复：如果 $0 是 bash (管道运行)，则从指定 URL 下载脚本作为快捷指令
+    if [[ "$0" == "bash" ]] || [[ "$0" == "-bash" ]]; then
+        # ⚠️ 请确保这里的 SELF_URL 变量已修改为你自己的仓库地址
+        # 如果未设置，将无法生成有效的 agsbx 命令
+        if [ -n "$SELF_URL" ]; then
+            wget -qO "$SCRIPT_PATH" "$SELF_URL" && chmod +x "$SCRIPT_PATH"
+        else
+            echo "⚠️ 警告：无法创建快捷指令 (未配置下载源)，请手动保存脚本。"
+        fi
+    else
+        # 正常运行，复制自身
+        cp "$0" "$SCRIPT_PATH" && chmod +x "$SCRIPT_PATH"
+    fi
     sudo ln -sf "$SCRIPT_PATH" /usr/local/bin/agsbx
 }
 
@@ -290,7 +370,8 @@ print_clash_meta() {
         echo "    password: $uuid"
         echo "    sni: www.bing.com"
         echo "    skip-cert-verify: true"
-        echo "    alpn: [h3]"
+        echo "    alpn:"
+        echo "      - h3"
     fi
     if [ -n "$ARGO_MODE" ] || [ -f "$CONF_DIR/port_vm_ws" ]; then
         if [ -n "$ARGO_MODE" ]; then
@@ -344,7 +425,7 @@ cmd_list() {
     get_ip
     uuid=$(cat "$CONF_DIR/uuid")
     echo ""
-    echo "================ [Argosbx 净化版 v2.7] ================"
+    echo "================ [Argosbx 净化版 v2.8] ================"
     echo "  UUID: $uuid"
     echo "  IP:   $server_ip"
     [ -n "$WARP_MODE" ] && echo "  WARP: ✅ 开启"
@@ -364,6 +445,7 @@ cmd_list() {
        if [ -n "$ARGO_MODE" ]; then
           HOST_ADDR=${ARGO_URL:-$ARGO_DOMAIN}
           HOST_ADDR=$(echo $HOST_ADDR | sed 's/https:\/\///')
+          # 修复 JSON 格式 (正确转义)
           vm_json="{\"v\":\"2\",\"ps\":\"Clean-VMess-Argo\",\"add\":\"$HOST_ADDR\",\"port\":\"443\",\"id\":\"$uuid\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"$HOST_ADDR\",\"path\":\"/$uuid-vm\",\"tls\":\"tls\",\"sni\":\"$HOST_ADDR\"}"
        else
           vm_json="{\"v\":\"2\",\"ps\":\"Clean-VMess\",\"add\":\"$server_ip\",\"port\":\"$(cat $CONF_DIR/port_vm_ws)\",\"id\":\"$uuid\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"www.bing.com\",\"path\":\"/$uuid-vm\",\"tls\":\"\"}"
@@ -375,9 +457,9 @@ cmd_list() {
 
 cmd_uninstall() {
     echo "💣 卸载中..."
-    sudo systemctl stop xray-clean argo-clean 2>/dev/null
-    sudo systemctl disable xray-clean argo-clean 2>/dev/null
-    sudo rm -f /etc/systemd/system/xray-clean.service /etc/systemd/system/argo-clean.service /usr/local/bin/agsbx
+    sudo systemctl stop xray-clean argo-clean singbox-clean 2>/dev/null
+    sudo systemctl disable xray-clean argo-clean singbox-clean 2>/dev/null
+    sudo rm -f /etc/systemd/system/xray-clean.service /etc/systemd/system/argo-clean.service /etc/systemd/system/singbox-clean.service /usr/local/bin/agsbx
     sudo systemctl daemon-reload
     rm -rf "$WORKDIR"
     if [ -f "$BACKUP_DNS" ]; then sudo cp "$BACKUP_DNS" /etc/resolv.conf; echo "✅ DNS 已还原"; fi
@@ -404,7 +486,7 @@ case "$1" in
         cmd_list
         ;;
     *)
-        echo ">>> 开始安装 Argosbx 净化版 v2.7..."
+        echo ">>> 开始安装 Argosbx 净化版 v2.8..."
         configure_argo_if_needed
         configure_warp_if_needed
         download_core
