@@ -13,4 +13,4 @@ xray_uninstall_all.sh https://raw.githubusercontent.com/an2024520/test/refs/head
 xray_vless_ws_tls.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_vless_ws_tls.sh
 xray_vless_ws_tunnel.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_vless_ws_tunnel.sh
 install_cf_tunnel_debian.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/argo/install_cf_tunnel_debian.sh
-warp_native.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/modules/warp_native.sh
+xray_module_warp_native_route.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/modules/warp_native.sh
