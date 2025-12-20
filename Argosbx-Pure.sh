@@ -2,8 +2,7 @@
 
 # ==============================================================================
 # Argosbx 终极净化版 v2.5 (Refactored by Gemini)
-# 更新日志：
-# v2.5: 还原 ENC 加密逻辑 | 优化 Argo 随机端口体验 | 兼容 agk/agn 参数
+# 核心理念：去私货、零侵入、官方源、全功能保留 (ENC/Argo/WARP/WebUI兼容)
 # ==============================================================================
 
 # --- 1. 全局配置 ---
@@ -23,7 +22,7 @@ BACKUP_DNS="/etc/resolv.conf.bak.agsbx"
 [ -z "${tupt+x}" ] || tup=yes
 
 export uuid=${uuid:-''}
-# 端口变量
+# 端口变量 (支持传入固定端口，不传则后续随机生成)
 export port_vl_re=${vlpt:-''}
 export port_vm_ws=${vmpt:-''}
 export port_vw=${vwpt:-''}
@@ -37,7 +36,7 @@ export WP_KEY=${wpkey:-''}
 export WP_IP=${wpip:-''}
 export WP_RES=${wpres:-''}
 
-# Argo 变量 (兼容 WebUI 的 agk/agn 写法)
+# Argo 变量 (完美兼容 WebUI 的 agk/agn 写法)
 export ARGO_MODE=${argo:-''}     # vmpt 或 vwpt
 export ARGO_AUTH=${agk:-${token:-''}}    # Token
 export ARGO_DOMAIN=${agn:-''}            # 域名 (仅作显示用)
@@ -45,14 +44,15 @@ export ARGO_DOMAIN=${agn:-''}            # 域名 (仅作显示用)
 # --- 3. 环境检查 ---
 
 check_and_fix_network() {
+    # 基础依赖检测与安装
     if ! command -v curl >/dev/null 2>&1; then
         if [ -f /etc/debian_version ]; then sudo apt-get update -y && sudo apt-get install -y curl; fi
         if [ -f /etc/redhat-release ]; then sudo yum update -y && sudo yum install -y curl; fi
     fi
-    # IPv6-Only 优化
+    # IPv6-Only 优化 (DNS64)
     if ! curl -4 -s --connect-timeout 2 https://1.1.1.1 >/dev/null && curl -6 -s --connect-timeout 2 https://2606:4700:4700::1111 >/dev/null; then
         if [ ! -f "$BACKUP_DNS" ]; then
-            echo " ⚠️  检测到纯 IPv6 环境，正在临时优化 DNS..."
+            echo " ⚠️  检测到纯 IPv6 环境，正在临时优化 DNS 以支持下载..."
             sudo cp /etc/resolv.conf "$BACKUP_DNS"
             echo -e "nameserver 2001:67c:2b0::4\nnameserver 2001:67c:2b0::6" | sudo tee /etc/resolv.conf >/dev/null
         fi
@@ -67,7 +67,7 @@ check_dependencies() {
         *) echo "❌ 不支持的 CPU 架构: $ARCH"; exit 1 ;;
     esac
     if ! command -v unzip >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
-        echo "📦 安装依赖..."
+        echo "📦 安装必要依赖..."
         if [ -f /etc/debian_version ]; then sudo apt-get update -y && sudo apt-get install -y wget tar unzip socat python3; fi
         if [ -f /etc/redhat-release ]; then sudo yum update -y && sudo yum install -y wget tar unzip socat python3; fi
     fi
@@ -87,7 +87,7 @@ configure_argo_if_needed() {
     if [ -z "$ARGO_MODE" ]; then return; fi
     echo " ☁️  检测到 Argo 参数: argo=$ARGO_MODE"
 
-    # 关联协议
+    # 关联协议 (WebUI 逻辑还原)
     if [ "$ARGO_MODE" == "vmpt" ]; then
         vmp=yes
         echo " -> 已关联 VMess-WS"
@@ -103,7 +103,7 @@ configure_argo_if_needed() {
     if [ -n "$ARGO_AUTH" ]; then
         echo "✅ 使用预设 Token (固定隧道)。"
     else
-        echo " ⚠️  未检测到 Token。将在安装后启动临时隧道 (TryCloudflare)。"
+        echo " ⚠️  未检测到 Token。将在安装后启动 TryCloudflare 临时隧道。"
     fi
 }
 
@@ -136,8 +136,9 @@ configure_warp_if_needed() {
 # --- 5. 下载与生成配置 ---
 
 download_core() {
+    # 始终只从官方源下载
     if [ ! -f "$BIN_DIR/xray" ]; then
-        echo "⬇️ [Xray] 下载中..."
+        echo "⬇️ [Xray] 下载中 (Official)..."
         local latest=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep "tag_name" | cut -d '"' -f 4)
         wget -qO "$WORKDIR/xray.zip" "https://github.com/XTLS/Xray-core/releases/download/${latest}/Xray-linux-${XRAY_ARCH}.zip"
         unzip -o "$WORKDIR/xray.zip" -d "$WORKDIR/temp_xray" >/dev/null
@@ -147,7 +148,7 @@ download_core() {
         rm -rf "$WORKDIR/xray.zip" "$WORKDIR/temp_xray"
     fi
     if [ ! -f "$BIN_DIR/sing-box" ]; then
-        echo "⬇️ [Sing-box] 下载中..."
+        echo "⬇️ [Sing-box] 下载中 (Official)..."
         local latest=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep "tag_name" | cut -d '"' -f 4)
         local ver_num=${latest#v}
         wget -qO "$WORKDIR/sb.tar.gz" "https://github.com/SagerNet/sing-box/releases/download/${latest}/sing-box-${ver_num}-linux-${SB_ARCH}.tar.gz"
@@ -157,7 +158,7 @@ download_core() {
         rm -rf "$WORKDIR/sb.tar.gz" "$WORKDIR"/sing-box*linux*
     fi
     if [ -n "$ARGO_MODE" ] && [ ! -f "$BIN_DIR/cloudflared" ]; then
-        echo "⬇️ [Cloudflared] 下载中..."
+        echo "⬇️ [Cloudflared] 下载中 (Official)..."
         wget -qO "$BIN_DIR/cloudflared" "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}"
         chmod +x "$BIN_DIR/cloudflared"
     fi
@@ -169,16 +170,13 @@ generate_config() {
     [ -z "$ym_vl_re" ] && ym_vl_re="apple.com"
     echo "$ym_vl_re" > "$CONF_DIR/ym_vl_re"
 
-    # --- 核心修复：ENC 密钥生成 ---
-    # 如果启用了任意 VLESS 协议，生成 ENC 密钥，还原原版逻辑
+    # --- 核心修复：ENC 密钥生成 (完美还原原版功能) ---
     if [ -n "$vwp" ] || [ -n "$vlp" ]; then
         mkdir -p "$CONF_DIR/xrk"
         if [ ! -f "$CONF_DIR/xrk/dekey" ]; then
             # 调用 Xray 生成 vlessenc
             vlkey=$("$BIN_DIR/xray" vlessenc)
-            # 提取 decryption key
             dekey=$(echo "$vlkey" | grep '"decryption":' | sed -n '2p' | cut -d' ' -f2- | tr -d '"')
-            # 提取 encryption key (用于客户端链接)
             enkey=$(echo "$vlkey" | grep '"encryption":' | sed -n '2p' | cut -d' ' -f2- | tr -d '"')
             echo "$dekey" > "$CONF_DIR/xrk/dekey"
             echo "$enkey" > "$CONF_DIR/xrk/enkey"
@@ -187,7 +185,7 @@ generate_config() {
         enkey=$(cat "$CONF_DIR/xrk/enkey")
     fi
 
-    # 端口生成 (支持随机)
+    # 端口生成 (支持随机兜底)
     if [ -n "$vmp" ]; then
         [ -z "$port_vm_ws" ] && [ -f "$CONF_DIR/port_vm_ws" ] && port_vm_ws=$(cat "$CONF_DIR/port_vm_ws")
         [ -z "$port_vm_ws" ] && port_vm_ws=$(shuf -i 10000-65535 -n 1)
@@ -213,7 +211,7 @@ generate_config() {
     cat > "$CONF_DIR/xr.json" <<EOF
 { "log": { "loglevel": "none" }, "inbounds": [
 EOF
-    # Reality (标准解密方式为 none)
+    # Reality
     if [ -n "$vlp" ] || [ -z "${vmp}${vwp}${hyp}${tup}" ]; then 
         [ -z "$port_vl_re" ] && port_vl_re=$(shuf -i 10000-65535 -n 1)
         echo "$port_vl_re" > "$CONF_DIR/port_vl_re"
@@ -229,8 +227,8 @@ EOF
 EOF
     fi
     # VLESS-WS (启用 ENC 支持)
-    # 注意: 这里 decryption 使用生成的 dekey，完美还原 vless-ws-enc
     if [ -n "$vwp" ]; then
+        # 这里的 decryption 使用生成的 dekey，完美还原 vless-ws-enc
         cat >> "$CONF_DIR/xr.json" <<EOF
     { "listen": "::", "port": ${port_vw}, "protocol": "vless", "settings": { "clients": [{ "id": "${uuid}" }], "decryption": "${dekey}" }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/${uuid}-vw" } } },
 EOF
@@ -288,9 +286,11 @@ EOF
         if [ "$ARGO_MODE" == "vwpt" ]; then TARGET_PORT=$port_vw; fi
         
         if [ -n "$ARGO_AUTH" ]; then
+            # Token 模式 (固定)
             EXEC_START="$BIN_DIR/cloudflared tunnel --no-autoupdate run --token $ARGO_AUTH"
             DESC="Argo (Token)"
         else
+            # 临时模式 (随机)
             EXEC_START="$BIN_DIR/cloudflared tunnel --url http://localhost:$TARGET_PORT --no-autoupdate"
             DESC="Argo (Quick)"
         fi
