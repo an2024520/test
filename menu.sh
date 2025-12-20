@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # ============================================================
-#  全能协议管理中心 (Commander v3.5 - 架构重构版)
-#  - 适配架构: Core / Nodes / Routing / Tools
+#  全能协议管理中心 (Commander v3.5)
+#  - 架构: Core / Nodes / Routing / Tools
 #  - 特性: 动态链接 / 环境自洁 / 模块化路由
 # ============================================================
 
@@ -39,12 +39,12 @@ FILE_NODE_DEL="xray_module_node_del.sh"
 FILE_HY2="hy2.sh"
 
 # 路由与工具类
-FILE_NATIVE_WARP="warp_native.sh"         # 新模块
+FILE_NATIVE_WARP="warp_native.sh"         # ★ 新模块
 FILE_ATTACH="xray_module_attach_warp.sh"  # 旧挂载
 FILE_DETACH="xray_module_detach_warp.sh"  # 旧卸载
 FILE_BOOST="xray_module_boost.sh"
 
-# --- 引擎函数保持不变 (check_dir_clean, init_urls, get_url_by_name, check_run) ---
+# --- 引擎函数 (保持不变) ---
 
 check_dir_clean() {
     local current_script=$(basename "$0")
@@ -94,7 +94,7 @@ check_run() {
 }
 
 # ==========================================
-# 2. 新版菜单逻辑 (适配你的梳理结构)
+# 2. 菜单逻辑 (新架构)
 # ==========================================
 
 # --- 1. 前置/核心管理 ---
