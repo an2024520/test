@@ -1,10 +1,8 @@
 #!/bin/bash
 
 # ==============================================================================
-# Argosbx 终极净化版 v2.6 (Refactored by Gemini)
-# 更新日志：
-# v2.6: 新增 OpenClash (Clash Meta) 节点配置输出
-# v2.5: 还原 ENC 加密逻辑 | 优化 Argo 随机端口体验
+# Argosbx 终极净化版 v2.7 (Refactored by Gemini)
+# 修复日志：v2.7 修复潜在的语法截断问题，增强 OpenClash 输出稳定性
 # ==============================================================================
 
 # --- 1. 全局配置 ---
@@ -15,8 +13,7 @@ CONF_DIR="$WORKDIR/conf"
 SCRIPT_PATH="$WORKDIR/agsbx.sh"
 BACKUP_DNS="/etc/resolv.conf.bak.agsbx"
 
-# --- 2. 变量映射 (WebUI 兼容层) ---
-# 协议开关
+# --- 2. 变量映射 ---
 [ -z "${vlpt+x}" ] || vlp=yes
 [ -z "${vmpt+x}" ] || { vmp=yes; vmag=yes; }
 [ -z "${vwpt+x}" ] || { vwp=yes; vmag=yes; }
@@ -24,7 +21,6 @@ BACKUP_DNS="/etc/resolv.conf.bak.agsbx"
 [ -z "${tupt+x}" ] || tup=yes
 
 export uuid=${uuid:-''}
-# 端口变量
 export port_vl_re=${vlpt:-''}
 export port_vm_ws=${vmpt:-''}
 export port_vw=${vwpt:-''}
@@ -32,16 +28,14 @@ export port_hy2=${hypt:-''}
 export port_tu=${tupt:-''}
 export ym_vl_re=${reym:-''}
 
-# WARP 变量
 export WARP_MODE=${warp:-${wap:-''}}
 export WP_KEY=${wpkey:-''}
 export WP_IP=${wpip:-''}
 export WP_RES=${wpres:-''}
 
-# Argo 变量
-export ARGO_MODE=${argo:-''}     # vmpt 或 vwpt
-export ARGO_AUTH=${agk:-${token:-''}}    # Token
-export ARGO_DOMAIN=${agn:-''}            # 域名
+export ARGO_MODE=${argo:-''}
+export ARGO_AUTH=${agk:-${token:-''}}
+export ARGO_DOMAIN=${agn:-''}
 
 # --- 3. 环境检查 ---
 
@@ -50,7 +44,6 @@ check_and_fix_network() {
         if [ -f /etc/debian_version ]; then sudo apt-get update -y && sudo apt-get install -y curl; fi
         if [ -f /etc/redhat-release ]; then sudo yum update -y && sudo yum install -y curl; fi
     fi
-    # IPv6-Only 优化
     if ! curl -4 -s --connect-timeout 2 https://1.1.1.1 >/dev/null && curl -6 -s --connect-timeout 2 https://2606:4700:4700::1111 >/dev/null; then
         if [ ! -f "$BACKUP_DNS" ]; then
             echo " ⚠️  检测到纯 IPv6 环境，正在临时优化 DNS..."
@@ -80,7 +73,7 @@ get_ip() {
     v6=$(curl -s6m5 https://icanhazip.com)
     server_ip=${v4:-$v6}
     [[ "$server_ip" =~ : ]] && server_ip="[$server_ip]"
-    raw_ip=${v4:-$v6} # 用于Clash配置的纯IP
+    raw_ip=${v4:-$v6}
 }
 
 # --- 4. 配置逻辑 ---
@@ -215,13 +208,12 @@ EOF
       { "type": "field", "outboundTag": "direct", "port": "0-65535" } ] } }
 EOF
 
-    # 占位 Sing-box
     cat > "$CONF_DIR/sb.json" <<EOF
 { "log": { "level": "info" }, "inbounds": [], "outbounds": [{ "type": "direct", "tag": "direct" }] }
 EOF
 }
 
-# --- 6. 服务 ---
+# --- 6. 服务与输出 ---
 
 setup_services() {
     USER_NAME=$(whoami)
@@ -238,7 +230,6 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
-
     if [ -n "$ARGO_MODE" ]; then
         if [ "$ARGO_MODE" == "vmpt" ]; then TARGET_PORT=$port_vm_ws; fi
         if [ "$ARGO_MODE" == "vwpt" ]; then TARGET_PORT=$port_vw; fi
@@ -258,7 +249,6 @@ WantedBy=multi-user.target
 EOF
         sudo systemctl daemon-reload; sudo systemctl enable argo-clean; sudo systemctl restart argo-clean
     fi
-
     sudo systemctl daemon-reload; sudo systemctl enable xray-clean; restart_services
 }
 
@@ -272,14 +262,10 @@ setup_shortcut() {
     sudo ln -sf "$SCRIPT_PATH" /usr/local/bin/agsbx
 }
 
-# --- 7. 输出逻辑 ---
-
 print_clash_meta() {
     echo ""
     echo "================ [Clash Meta / OpenClash 格式配置] ================"
     echo "proxies:"
-    
-    # 1. Reality
     if [ -f "$CONF_DIR/port_vl_re" ]; then
         echo "  - name: Clean-Reality"
         echo "    type: vless"
@@ -296,8 +282,6 @@ print_clash_meta() {
         echo "      short-id: $(cat $CONF_DIR/xrk/short_id)"
         echo "    client-fingerprint: chrome"
     fi
-
-    # 2. Hysteria2
     if [ -f "$CONF_DIR/port_hy2" ]; then
         echo "  - name: Clean-Hy2"
         echo "    type: hysteria2"
@@ -306,44 +290,18 @@ print_clash_meta() {
         echo "    password: $uuid"
         echo "    sni: www.bing.com"
         echo "    skip-cert-verify: true"
-        echo "    alpn:"
-        echo "      - h3"
-    fi
-
-    # 3. Tuic
-    if [ -f "$CONF_DIR/port_tu" ]; then
-        echo "  - name: Clean-Tuic"
-        echo "    type: tuic"
-        echo "    server: $raw_ip"
-        echo "    port: $(cat $CONF_DIR/port_tu)"
-        echo "    uuid: $uuid"
-        echo "    password: $uuid"
-        echo "    sni: www.bing.com"
-        echo "    skip-cert-verify: true"
         echo "    alpn: [h3]"
-        echo "    congestion-controller: bbr"
-        echo "    udp-relay-mode: native"
     fi
-
-    # 4. Argo / VMess
     if [ -n "$ARGO_MODE" ] || [ -f "$CONF_DIR/port_vm_ws" ]; then
-        # 确定服务器地址
         if [ -n "$ARGO_MODE" ]; then
             if [ -z "$ARGO_AUTH" ]; then 
                 SERVER_ADDR=$(journalctl -u argo-clean -n 20 --no-pager | grep -o 'https://.*\.trycloudflare\.com' | tail -n 1 | sed 's/https:\/\///')
             else 
                 SERVER_ADDR="${ARGO_DOMAIN}"
             fi
-            SERVER_PORT=443
-            IS_TLS=true
-            SKIP_CERT=false
-            ARGO_HOST="$SERVER_ADDR"
+            SERVER_PORT=443; IS_TLS=true; SKIP_CERT=false; ARGO_HOST="$SERVER_ADDR"
         else
-            SERVER_ADDR="$raw_ip"
-            SERVER_PORT=$(cat $CONF_DIR/port_vm_ws)
-            IS_TLS=false
-            SKIP_CERT=true
-            ARGO_HOST="www.bing.com"
+            SERVER_ADDR="$raw_ip"; SERVER_PORT=$(cat $CONF_DIR/port_vm_ws); IS_TLS=false; SKIP_CERT=true; ARGO_HOST="www.bing.com"
         fi
 
         if [ -f "$CONF_DIR/port_vm_ws" ]; then
@@ -363,8 +321,6 @@ print_clash_meta() {
             echo "      headers:"
             echo "        Host: $ARGO_HOST"
         fi
-        
-        # VLESS-WS (Enc) for Argo
         if [ -f "$CONF_DIR/port_vw" ] && [ -n "$ARGO_MODE" ]; then
              echo "  - name: Clean-VLESS-Argo"
              echo "    type: vless"
@@ -388,7 +344,7 @@ cmd_list() {
     get_ip
     uuid=$(cat "$CONF_DIR/uuid")
     echo ""
-    echo "================ [Argosbx 净化版 v2.6] ================"
+    echo "================ [Argosbx 净化版 v2.7] ================"
     echo "  UUID: $uuid"
     echo "  IP:   $server_ip"
     [ -n "$WARP_MODE" ] && echo "  WARP: ✅ 开启"
@@ -406,9 +362,7 @@ cmd_list() {
     [ -f "$CONF_DIR/port_hy2" ] && echo "🚀 [Hysteria2] hysteria2://$uuid@$server_ip:$(cat $CONF_DIR/port_hy2)?security=tls&alpn=h3&insecure=1&sni=www.bing.com#Clean-Hy2"
     if [ -f "$CONF_DIR/port_vm_ws" ]; then
        if [ -n "$ARGO_MODE" ]; then
-          # Argo 模式下的 VMess 链接
           HOST_ADDR=${ARGO_URL:-$ARGO_DOMAIN}
-          # 去掉 https://
           HOST_ADDR=$(echo $HOST_ADDR | sed 's/https:\/\///')
           vm_json="{\"v\":\"2\",\"ps\":\"Clean-VMess-Argo\",\"add\":\"$HOST_ADDR\",\"port\":\"443\",\"id\":\"$uuid\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"$HOST_ADDR\",\"path\":\"/$uuid-vm\",\"tls\":\"tls\",\"sni\":\"$HOST_ADDR\"}"
        else
@@ -416,5 +370,48 @@ cmd_list() {
        fi
        echo "🌀 [VMess] vmess://$(echo -n "$vm_json" | base64 -w 0)"
     fi
-    
-    # 打印
+    print_clash_meta
+}
+
+cmd_uninstall() {
+    echo "💣 卸载中..."
+    sudo systemctl stop xray-clean argo-clean 2>/dev/null
+    sudo systemctl disable xray-clean argo-clean 2>/dev/null
+    sudo rm -f /etc/systemd/system/xray-clean.service /etc/systemd/system/argo-clean.service /usr/local/bin/agsbx
+    sudo systemctl daemon-reload
+    rm -rf "$WORKDIR"
+    if [ -f "$BACKUP_DNS" ]; then sudo cp "$BACKUP_DNS" /etc/resolv.conf; echo "✅ DNS 已还原"; fi
+    echo "✅ 卸载完成。"
+}
+
+if [[ -z "$1" ]] || [[ "$1" == "rep" ]]; then
+    check_and_fix_network
+    check_dependencies
+fi
+
+case "$1" in
+    list) cmd_list ;;
+    del)  cmd_uninstall ;;
+    res)  restart_services && echo "✅ 服务已重启" ;;
+    rep)  
+        echo "♻️ 重置配置..."
+        echo "⚠️ 注意：增加协议请带上所有变量！"
+        rm -rf "$CONF_DIR"/*.json "$CONF_DIR"/port*
+        configure_argo_if_needed
+        configure_warp_if_needed
+        generate_config
+        restart_services
+        cmd_list
+        ;;
+    *)
+        echo ">>> 开始安装 Argosbx 净化版 v2.7..."
+        configure_argo_if_needed
+        configure_warp_if_needed
+        download_core
+        generate_config
+        setup_services
+        setup_shortcut
+        echo "✅ 安装完成！快捷指令: agsbx"
+        cmd_list
+        ;;
+esac
