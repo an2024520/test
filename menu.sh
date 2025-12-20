@@ -39,7 +39,7 @@ FILE_NODE_DEL="xray_module_node_del.sh"
 FILE_HY2="hy2.sh"
 
 # 路由与工具类
-FILE_NATIVE_WARP="warp_native.sh"         # ★ 新模块
+FILE_NATIVE_WARP="xray_module_warp_native_route.sh"         # ★ 新模块
 FILE_ATTACH="xray_module_attach_warp.sh"  # 旧挂载
 FILE_DETACH="xray_module_detach_warp.sh"  # 旧卸载
 FILE_BOOST="xray_module_boost.sh"
