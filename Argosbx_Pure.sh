@@ -1,22 +1,22 @@
 #!/bin/bash
 
 # ==============================================================================
-# Argosbx 终极净化版 v3.0 (Refactored by Gemini)
+# Argosbx 终极净化版 v3.1 (Refactored by Gemini)
 # 修复日志：
-# v3.0: 修复变量为空BUG | 强制清理原版劫持 | 完善OpenClash输出 | 目录隔离
+# v3.1: 修复UUID文件被清空BUG | 强力清除原版 $HOME/bin 残留 | 移除冗余逻辑
+# v3.0: 目录隔离与OpenClash支持
 # ==============================================================================
 
 # --- 1. 全局配置 ---
 export LANG=en_US.UTF-8
-# 使用独立目录，与原版($HOME/agsbx)彻底隔离
 WORKDIR="$HOME/agsbx_clean"
 BIN_DIR="$WORKDIR/bin"
 CONF_DIR="$WORKDIR/conf"
-SCRIPT_PATH="$WORKDIR/agsbx_pure.sh" # 本地副本路径
+SCRIPT_PATH="$WORKDIR/agsbx_pure.sh"
 BACKUP_DNS="/etc/resolv.conf.bak.agsbx"
 
-# ⚠️ 如果你有自己的GitHub仓库，请修改这里。否则脚本会使用本地复制模式。
-SELF_URL="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/Argosbx_Pure.sh" 
+# ⚠️ [重要] 如果你是 fork 使用，请修改此 URL；如果是本地文件运行，可忽略。
+SELF_URL="https://raw.githubusercontent.com/an2024520/test/main/Argosbx_Pure.sh"
 
 # --- 2. 变量映射 ---
 [ -z "${vlpt+x}" ] || vlp=yes
@@ -42,12 +42,12 @@ export ARGO_MODE=${argo:-''}
 export ARGO_AUTH=${agk:-${token:-''}}
 export ARGO_DOMAIN=${agn:-''}
 
-# --- 3. 核心初始化 (修复 UUID 为空的问题) ---
+# --- 3. 核心初始化 (修复 UUID 逻辑) ---
 
 init_variables() {
     mkdir -p "$BIN_DIR" "$CONF_DIR" "$WORKDIR/xrk"
     
-    # 1. UUID 生成 (优先读取，不存在则生成)
+    # 1. UUID 生成 (这是唯一生成源，确保正确)
     if [ -z "$uuid" ]; then
         if [ -f "$CONF_DIR/uuid" ]; then
             uuid=$(cat "$CONF_DIR/uuid")
@@ -58,8 +58,8 @@ init_variables() {
     else
         echo "$uuid" > "$CONF_DIR/uuid"
     fi
-    # 强制清洗 UUID
-    uuid=$(echo "$uuid" | tr -d '\n\r ')
+    # 再次读取并强力清洗，防止换行符
+    uuid=$(cat "$CONF_DIR/uuid" | tr -d '\n\r ')
 
     # 2. 证书生成
     if [ ! -f "$CONF_DIR/cert.pem" ]; then
@@ -67,24 +67,32 @@ init_variables() {
         openssl req -new -x509 -days 36500 -key "$CONF_DIR/private.key" -out "$CONF_DIR/cert.pem" -subj "/CN=www.bing.com" 2>/dev/null
     fi
 
-    # 3. ENC/Reality 密钥生成 (提前生成，确保变量不为空)
+    # 3. 标记是否需要生成 Xray 密钥
     if [ ! -f "$CONF_DIR/xrk/private_key" ]; then
-        # 即使还没下载xray，先标记需要生成。下载完成后会立即生成。
         NEED_XRAY_KEYS=true
     fi
 }
 
-# --- 4. 清理原版残留 (防劫持) ---
+# --- 4. 清理原版残留 (强力杀虫) ---
 
 cleanup_original_bloatware() {
-    # 清理 .bashrc 中的别名劫持
+    # 1. 清理 .bashrc 劫持
     if [ -f ~/.bashrc ]; then
         sed -i '/agsbx/d' ~/.bashrc
         sed -i '/yonggekkk/d' ~/.bashrc
+        # 移除原版添加的 PATH
+        sed -i '/export PATH="\$HOME\/bin:\$PATH"/d' ~/.bashrc
     fi
-    # 清理原版快捷方式
+    
+    # 2. 清理原版二进制和快捷方式 (包含隐藏的 $HOME/bin)
     rm -f /usr/local/bin/agsbx
     rm -f /usr/bin/agsbx
+    rm -rf "$HOME/bin/agsbx"
+    
+    # 3. 停止原版服务 (如果有)
+    pkill -f 'agsbx/s' 2>/dev/null
+    pkill -f 'agsbx/x' 2>/dev/null
+    pkill -f 'agsbx/c' 2>/dev/null
 }
 
 # --- 5. 环境检查 ---
@@ -179,12 +187,12 @@ download_core() {
 
 generate_config() {
     echo "⚙️ 生成配置..."
+    # 修复：移除错误的 UUID 覆盖逻辑，完全信任 init_variables 的结果
     [ -z "$ym_vl_re" ] && ym_vl_re="apple.com"
     echo "$ym_vl_re" > "$CONF_DIR/ym_vl_re"
 
-    # 生成 Xray 密钥 (下载完 Xray 后立即执行)
+    # Xray 密钥生成
     if [ -n "$vwp" ] || [ -n "$vlp" ]; then
-        # 生成私钥/公钥/ShortID
         if [ "$NEED_XRAY_KEYS" = true ] || [ ! -f "$CONF_DIR/xrk/private_key" ]; then
             "$BIN_DIR/xray" x25519 > "$CONF_DIR/temp_key"
             awk '/PrivateKey/{print $2}' "$CONF_DIR/temp_key" | tr -d '\n\r ' > "$CONF_DIR/xrk/private_key"
@@ -193,7 +201,6 @@ generate_config() {
             openssl rand -hex 4 | tr -d '\n\r ' > "$CONF_DIR/xrk/short_id"
         fi
         
-        # 生成 ENC 密钥
         if [ ! -f "$CONF_DIR/xrk/dekey" ]; then
             vlkey=$("$BIN_DIR/xray" vlessenc)
             echo "$vlkey" | grep '"decryption":' | sed -n '2p' | cut -d' ' -f2- | tr -d '"' | tr -d '\n\r ' > "$CONF_DIR/xrk/dekey"
@@ -230,6 +237,8 @@ EOF
     if [ -n "$vlp" ] || [ -z "${vmp}${vwp}${hyp}${tup}" ]; then 
         [ -z "$port_vl_re" ] && port_vl_re=$(shuf -i 10000-65535 -n 1)
         echo "$port_vl_re" > "$CONF_DIR/port_vl_re"
+        # 补救措施：如果私钥未生成，尝试生成
+        [ ! -f "$CONF_DIR/xrk/private_key" ] && { "$BIN_DIR/xray" x25519 > "$CONF_DIR/temp_key"; awk '/PrivateKey/{print $2}' "$CONF_DIR/temp_key" | tr -d '\n\r ' > "$CONF_DIR/xrk/private_key"; awk '/PublicKey/{print $2}' "$CONF_DIR/temp_key" | tr -d '\n\r ' > "$CONF_DIR/xrk/public_key"; rm "$CONF_DIR/temp_key"; openssl rand -hex 4 | tr -d '\n\r ' > "$CONF_DIR/xrk/short_id"; }
         cat >> "$CONF_DIR/xr.json" <<EOF
     { "listen": "::", "port": $port_vl_re, "protocol": "vless", "settings": { "clients": [{ "id": "${uuid}", "flow": "xtls-rprx-vision" }], "decryption": "none" }, "streamSettings": { "network": "tcp", "security": "reality", "realitySettings": { "dest": "${ym_vl_re}:443", "serverNames": ["${ym_vl_re}"], "privateKey": "$(cat $CONF_DIR/xrk/private_key)", "shortIds": ["$(cat $CONF_DIR/xrk/short_id)"] } } },
 EOF
@@ -371,17 +380,16 @@ restart_services() {
 
 setup_shortcut() {
     # 修复：防止劫持逻辑
-    # 1. 尝试将当前运行的脚本内容写入目标路径 (仅当本地有文件时)
-    if [[ -f "$0" ]]; then
+    # 1. 如果本地有文件，复制自己
+    if [[ -f "$0" ]] && [[ "$0" != "bash" ]]; then
         cp "$0" "$SCRIPT_PATH"
-    elif [ -n "$SELF_URL" ]; then
-        # 2. 管道安装且配置了 URL，从 URL 下载
+    # 2. 如果是管道安装且配置了URL，下载自己
+    elif [ -n "$SELF_URL" ] && [[ "$SELF_URL" == http* ]]; then
         wget -qO "$SCRIPT_PATH" "$SELF_URL"
     else
-        # 3. 实在没办法，创建一个简单的 wrapper
+        # 3. 实在不行，警告用户
         echo "#!/bin/bash" > "$SCRIPT_PATH"
-        echo "echo '⚠️ 错误：脚本通过管道安装且未配置更新源，无法执行完整 agsbx 功能。'" >> "$SCRIPT_PATH"
-        echo "echo '请重新使用 install.sh 文件方式运行安装。'" >> "$SCRIPT_PATH"
+        echo "echo '⚠️ 错误：快捷指令失效。请使用 ./install.sh 方式运行脚本。'" >> "$SCRIPT_PATH"
     fi
     chmod +x "$SCRIPT_PATH"
     sudo ln -sf "$SCRIPT_PATH" /usr/local/bin/agsbx 2>/dev/null
@@ -473,7 +481,7 @@ cmd_list() {
     uuid=$(cat "$CONF_DIR/uuid" | tr -d '\n\r ')
     
     echo ""
-    echo "================ [Argosbx 净化版 v3.0] ================"
+    echo "================ [Argosbx 净化版 v3.1] ================"
     echo "  UUID: $uuid"
     echo "  IP:   $server_ip"
     [ -n "$WARP_MODE" ] && echo "  WARP: ✅ 开启"
@@ -541,7 +549,7 @@ case "$1" in
         cmd_list
         ;;
     *)
-        echo ">>> 开始安装 Argosbx 净化版 v3.0..."
+        echo ">>> 开始安装 Argosbx 净化版 v3.1..."
         configure_argo_if_needed
         configure_warp_if_needed
         download_core
