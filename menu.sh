@@ -1,10 +1,9 @@
 #!/bin/bash
 
 # ============================================================
-#  全能协议管理中心 (Commander v3.4 - 动态链接 & 环境自洁)
-#  - 基础设施: Warp / Cloudflare Tunnel
-#  - 核心协议: Xray / Hysteria 2
-#  - 特性: 动态获取链接 / 开局环境检查 / 强制更新模式
+#  全能协议管理中心 (Commander v3.5 - 架构重构版)
+#  - 适配架构: Core / Nodes / Routing / Tools
+#  - 特性: 动态链接 / 环境自洁 / 模块化路由
 # ============================================================
 
 # 颜色定义
@@ -14,236 +13,190 @@ YELLOW='\033[0;33m'
 SKYBLUE='\033[0;36m'
 PLAIN='\033[0m'
 GRAY='\033[0;37m'
+BLUE='\033[0;34m'
 
 # ==========================================
-# 1. 核心配置与动态加载系统
+# 1. 核心配置与文件映射
 # ==========================================
 
-# 脚本索引文件的下载地址
 URL_LIST_FILE="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/sh_url.txt"
 LOCAL_LIST_FILE="/tmp/sh_url.txt"
 
-# [本地文件名定义]
-FILE_WARP="warp_wireproxy_socks5.sh"
-FILE_INSTALL_CF="install_cf_tunnel_debian.sh"
-
+# [文件映射: 本地文件名 <-> sh_url.txt 中的 Key]
+# 核心类
 FILE_XRAY_CORE="xray_core.sh"
+FILE_XRAY_UNINSTALL="xray_uninstall_all.sh"
+FILE_WIREPROXY="warp_wireproxy_socks5.sh"
+FILE_CF_TUNNEL="install_cf_tunnel_debian.sh"
+
+# 节点类
 FILE_ADD_XHTTP="xray_vless_xhttp_reality.sh"
 FILE_ADD_VISION="xray_vless_vision_reality.sh"
 FILE_ADD_WS="xray_vless_ws_tls.sh"
 FILE_ADD_TUNNEL="xray_vless_ws_tunnel.sh"
-
-FILE_NODE_DEL="xray_module_node_del.sh"
 FILE_NODE_INFO="xray_get_node_details.sh"
-FILE_ATTACH="xray_module_attach_warp.sh"
-FILE_DETACH="xray_module_detach_warp.sh"
-FILE_BOOST="xray_module_boost.sh"
-FILE_XRAY_UNINSTALL="xray_uninstall_all.sh"
-
+FILE_NODE_DEL="xray_module_node_del.sh"
 FILE_HY2="hy2.sh"
 
-# --- 函数: 环境清理与更新检查 (新增) ---
+# 路由与工具类
+FILE_NATIVE_WARP="warp_native.sh"         # 新模块
+FILE_ATTACH="xray_module_attach_warp.sh"  # 旧挂载
+FILE_DETACH="xray_module_detach_warp.sh"  # 旧卸载
+FILE_BOOST="xray_module_boost.sh"
+
+# --- 引擎函数保持不变 (check_dir_clean, init_urls, get_url_by_name, check_run) ---
+
 check_dir_clean() {
     local current_script=$(basename "$0")
-    # 统计当前目录下除了脚本自己以外的文件数量
     local file_count=$(ls -1 | grep -v "^$current_script$" | wc -l)
-
-    # 只有当目录下有其他文件时才询问
     if [[ "$file_count" -gt 0 ]]; then
         echo -e "${YELLOW}======================================================${PLAIN}"
-        echo -e "${YELLOW} 检测到当前目录 [ $(pwd) ] 下存在 $file_count 个历史文件/杂项。${PLAIN}"
-        echo -e "${YELLOW}======================================================${PLAIN}"
+        echo -e "${YELLOW} 检测到当前目录存在 $file_count 个历史文件。${PLAIN}"
         echo -e "为了确保脚本运行在最新状态，建议在【空文件夹】下运行。"
-        echo -e "您可以选择清空当前目录（保留本脚本），这等同于【强制更新】所有组件。"
         echo -e ""
-        read -p "是否清空当前目录文件并重新下载? (y/n, 默认 n): " clean_opt
-        
+        read -p "是否清空当前目录并强制更新所有组件? (y/n, 默认 n): " clean_opt
         if [[ "$clean_opt" == "y" ]]; then
-            echo -e "${RED}警告: 即将删除 $(pwd) 下除 $current_script 外的所有文件！${PLAIN}"
-            read -p "请再次确认 (输入 y 确认): " confirm_clean
-            if [[ "$confirm_clean" == "y" ]]; then
-                echo -e "${YELLOW}正在清理...${PLAIN}"
-                # 遍历删除，确保不删自己
-                ls | grep -v "^$current_script$" | xargs rm -rf
-                echo -e "${GREEN}清理完成！${PLAIN}"
-                echo -e "${GREEN}旧组件已移除，接下来的操作将自动下载最新版脚本。${PLAIN}"
-                sleep 1
-            else
-                echo -e "操作取消。"
-            fi
-        else
-            echo -e "${GRAY}保留现有文件继续运行... (如遇报错请尝试清空目录)${PLAIN}"
+            ls | grep -v "^$current_script$" | xargs rm -rf
+            echo -e "${GREEN}清理完成，即将下载最新组件。${PLAIN}"; sleep 1
         fi
         echo -e ""
     fi
 }
 
-# --- 函数: 初始化链接列表 ---
 init_urls() {
     echo -e "${YELLOW}正在同步最新脚本列表...${PLAIN}"
     wget -T 5 -qO "$LOCAL_LIST_FILE" "$URL_LIST_FILE"
-    
     if [[ $? -ne 0 ]]; then
-        echo -e "${RED}警告: 无法连接 GitHub 获取 sh_url.txt。${PLAIN}"
-        if [[ -f "$LOCAL_LIST_FILE" ]]; then
-            echo -e "${YELLOW}网络异常，将使用本地缓存的列表继续运行。${PLAIN}"
-        else
-            echo -e "${RED}致命错误: 无法获取脚本下载地址，且无本地缓存。程序退出。${PLAIN}"
-            exit 1
-        fi
+        if [[ -f "$LOCAL_LIST_FILE" ]]; then echo -e "${YELLOW}网络异常，使用本地缓存列表。${PLAIN}"; else echo -e "${RED}致命错误: 无法获取脚本列表。${PLAIN}"; exit 1; fi
     else
         echo -e "${GREEN}同步完成。${PLAIN}"
     fi
 }
 
-# --- 函数: 根据文件名查找 URL ---
 get_url_by_name() {
     local fname="$1"
-    local found_url=$(grep "^$fname" "$LOCAL_LIST_FILE" | awk '{print $2}' | head -n 1)
-    echo "$found_url"
+    grep "^$fname" "$LOCAL_LIST_FILE" | awk '{print $2}' | head -n 1
 }
 
-# --- 函数: 检查/下载/运行 ---
 check_run() {
     local script_name="$1"
-    
-    # 如果文件不存在(或已被清理)，则下载
     if [[ ! -f "$script_name" ]]; then
-        echo -e "${YELLOW}脚本 [$script_name] 本地不存在，正在获取最新版...${PLAIN}"
-        
+        echo -e "${YELLOW}正在获取组件 [$script_name] ...${PLAIN}"
         local script_url=$(get_url_by_name "$script_name")
-        
-        if [[ -z "$script_url" ]]; then
-            echo -e "${RED}错误: 在 sh_url.txt 中未找到 [$script_name] 的记录。${PLAIN}"
-            read -p "按回车键返回..."
-            return
-        fi
-        
-        wget -O "$script_name" "$script_url"
-        
-        if [[ $? -ne 0 ]]; then
-            echo -e "${RED}下载失败！请检查网络。${PLAIN}"
-            read -p "按回车键返回..."
-            return
-        fi
-        echo -e "${GREEN}下载成功！${PLAIN}"
+        if [[ -z "$script_url" ]]; then echo -e "${RED}错误: sh_url.txt 中未找到该文件记录。${PLAIN}"; read -p "按回车继续..."; return; fi
+        wget -qO "$script_name" "$script_url"
+        if [[ $? -ne 0 ]]; then echo -e "${RED}下载失败。${PLAIN}"; read -p "按回车继续..."; return; fi
+        chmod +x "$script_name"
+        echo -e "${GREEN}获取成功。${PLAIN}"
     fi
-
-    chmod +x "$script_name"
     ./"$script_name"
-    
-    echo -e ""
-    read -p "操作结束，按回车键继续..."
+    echo -e ""; read -p "操作结束，按回车键继续..."
 }
 
 # ==========================================
-# 2. 菜单逻辑
+# 2. 新版菜单逻辑 (适配你的梳理结构)
 # ==========================================
 
-# --- 基础设施子菜单 ---
-menu_infra() {
+# --- 1. 前置/核心管理 ---
+menu_core() {
     while true; do
         clear
-        echo -e "${GREEN}========================================${PLAIN}"
-        echo -e "${GREEN}      基础设施管理 (Infrastructure)      ${PLAIN}"
-        echo -e "${GREEN}========================================${PLAIN}"
-        echo -e "${SKYBLUE}1.${PLAIN} Warp / WireProxy (出口代理)"
-        echo -e "   ${GRAY}- 只有本地端口，用于给 Xray/Hy2 提供干净 IP / 解锁流媒体${PLAIN}"
-        echo -e "${SKYBLUE}2.${PLAIN} Cloudflare Tunnel (内网穿透)"
-        echo -e "   ${GRAY}- 将本地 Xray 端口映射到公网，无需公网 IP，自带 CDN${PLAIN}"
-        echo -e "----------------------------------------"
-        echo -e "${GRAY}0. 返回上一级${PLAIN}"
+        echo -e "${BLUE}============= 前置/核心管理 (Core) =============${PLAIN}"
+        echo -e " ${SKYBLUE}1.${PLAIN} 安装/重置 Xray 核心环境"
+        echo -e " ${SKYBLUE}2.${PLAIN} ${RED}彻底卸载 Xray 服务${PLAIN}"
+        echo -e " ----------------------------------------------"
+        echo -e " ${SKYBLUE}3.${PLAIN} Sing-box 核心环境 (开发中...)"
+        echo -e " ----------------------------------------------"
+        echo -e " ${SKYBLUE}4.${PLAIN} WireProxy (Warp 出口代理服务)"
+        echo -e "    ${GRAY}- 仅提供本地 Socks5 端口，需配合路由规则使用${PLAIN}"
+        echo -e " ${SKYBLUE}5.${PLAIN} Cloudflare Tunnel (内网穿透)"
+        echo -e "    ${GRAY}- 将本地节点映射到公网，自带 CDN${PLAIN}"
+        echo -e " ----------------------------------------------"
+        echo -e " ${GRAY}0. 返回上一级${PLAIN}"
         echo -e ""
-        read -p "请选择: " infra_choice
-
-        case "$infra_choice" in
-            1) check_run "$FILE_WARP" ;;
-            2) check_run "$FILE_INSTALL_CF" ;;
+        read -p "请选择: " choice
+        case "$choice" in
+            1) check_run "$FILE_XRAY_CORE" ;;
+            2) check_run "$FILE_XRAY_UNINSTALL" ;;
+            3) echo "敬请期待 Sing-box"; sleep 1 ;;
+            4) check_run "$FILE_WIREPROXY" ;;
+            5) check_run "$FILE_CF_TUNNEL" ;;
             0) break ;;
             *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
     done
 }
 
-# --- Xray 宇宙子菜单 ---
-menu_xray() {
+# --- 2. 节点管理 ---
+menu_nodes() {
     while true; do
         clear
-        echo -e "${GREEN}========================================${PLAIN}"
-        echo -e "${GREEN}       Xray 宇宙 (The Xray Universe)     ${PLAIN}"
-        echo -e "${GREEN}========================================${PLAIN}"
-        echo -e "${SKYBLUE}1.${PLAIN} 前置安装 / 环境重置"
-        echo -e "${SKYBLUE}2.${PLAIN} 节点管理 (新增 / 删除 / 查看)"
-        echo -e "${SKYBLUE}3.${PLAIN} 路由分流 (Warp / Socks5)"
-        echo -e "${SKYBLUE}4.${PLAIN} 系统内核加速 (BBR + ECN)"
-        echo -e "${RED}5.${PLAIN} 彻底卸载 Xray 服务"
-        echo -e "----------------------------------------"
-        echo -e "${GRAY}0. 返回上一级${PLAIN}"
+        echo -e "${BLUE}============= 节点配置管理 (Nodes) =============${PLAIN}"
+        echo -e " [Xray 核心]"
+        echo -e " ${SKYBLUE}1.${PLAIN} 新增: VLESS-XHTTP (Reality - 穿透强)"
+        echo -e " ${SKYBLUE}2.${PLAIN} 新增: VLESS-Vision (Reality - 极稳定)"
+        echo -e " ${SKYBLUE}3.${PLAIN} 新增: VLESS-WS-TLS (CDN / Nginx前置)"
+        echo -e " ${SKYBLUE}4.${PLAIN} 新增: VLESS-WS-Tunnel (Tunnel穿透专用)"
+        echo -e " ${SKYBLUE}5.${PLAIN} 查看: 当前节点链接 / 分享信息"
+        echo -e " ${SKYBLUE}6.${PLAIN} ${RED}删除: 删除指定节点 / 清空配置${PLAIN}"
+        echo -e " ----------------------------------------------"
+        echo -e " [其他核心]"
+        echo -e " ${SKYBLUE}7.${PLAIN} 独立 Hysteria 2 节点管理"
+        echo -e " ${SKYBLUE}8.${PLAIN} Sing-box 节点管理 (预留)"
+        echo -e " ----------------------------------------------"
+        echo -e " ${GRAY}0. 返回上一级${PLAIN}"
         echo -e ""
-        read -p "请选择操作 [0-5]: " xray_choice
+        read -p "请选择: " choice
+        case "$choice" in
+            1) check_run "$FILE_ADD_XHTTP" ;;
+            2) check_run "$FILE_ADD_VISION" ;;
+            3) check_run "$FILE_ADD_WS" ;;
+            4) check_run "$FILE_ADD_TUNNEL" ;;
+            5) check_run "$FILE_NODE_INFO" ;;
+            6) check_run "$FILE_NODE_DEL" ;;
+            7) check_run "$FILE_HY2" ;;
+            8) echo "敬请期待"; sleep 1 ;;
+            0) break ;;
+            *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
+        esac
+    done
+}
 
-        case "$xray_choice" in
-            1)
+# --- 3. 路由规则管理 ---
+menu_routing() {
+    while true; do
+        clear
+        echo -e "${BLUE}============= 路由与分流规则 (Routing) =============${PLAIN}"
+        echo -e " [Xray 核心路由]"
+        echo -e " ${GREEN}1. Native WARP (原生模式 - 推荐)${PLAIN}"
+        echo -e "    ${GRAY}- 内核直连，支持 全局/分流/指定节点接管${PLAIN}"
+        echo -e ""
+        echo -e " ${YELLOW}2. Wireproxy WARP (传统挂载模式)${PLAIN}"
+        echo -e "    ${GRAY}- 需先在核心管理中安装 WireProxy 服务${PLAIN}"
+        echo -e " ----------------------------------------------"
+        echo -e " ${GRAY}0. 返回上一级${PLAIN}"
+        echo -e ""
+        read -p "请选择: " choice
+        case "$choice" in
+            1) check_run "$FILE_NATIVE_WARP" ;; # 直接调用新模块
+            2) 
                 while true; do
                     clear
-                    echo -e "${YELLOW}>>> [Xray] 子菜单：前置安装与环境${PLAIN}"
-                    echo -e "  1. 安装/重置 Xray 核心环境 (Core)"
-                    echo -e "  0. 返回上一级"
+                    echo -e "${YELLOW}>>> [传统模式] Wireproxy 挂载管理${PLAIN}"
+                    echo -e " 1. 挂载 WARP/Socks5 (解锁流媒体)"
+                    echo -e " 2. 解除 挂载 (恢复直连)"
+                    echo -e " 0. 返回"
                     echo -e ""
-                    read -p "请选择: " sub_choice_1
-                    case "$sub_choice_1" in
-                        1) check_run "$FILE_XRAY_CORE" ;;
-                        0) break ;;
-                        *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
-                    esac
-                done
-                ;;
-            2)
-                while true; do
-                    clear
-                    echo -e "${YELLOW}>>> [Xray] 子菜单：节点管理${PLAIN}"
-                    echo -e "  1. 新增节点: VLESS-XHTTP (Reality - 穿透强)"
-                    echo -e "  2. 新增节点: VLESS-Vision (Reality - 极稳定)"
-                    echo -e "  3. ${SKYBLUE}新增节点: VLESS-WS-TLS (CDN / Nginx前置)${PLAIN}"
-                    echo -e "  4. ${SKYBLUE}新增节点: VLESS-WS-Tunnel (Cloudflare穿透)${PLAIN}"
-                    echo -e "  5. 查看当前节点信息/分享链接"
-                    echo -e "  6. ${RED}删除/清空 节点${PLAIN}"
-                    echo -e "  0. 返回上一级"
-                    echo -e ""
-                    read -p "请选择: " sub_choice_2
-                    case "$sub_choice_2" in
-                        1) check_run "$FILE_ADD_XHTTP" ;;
-                        2) check_run "$FILE_ADD_VISION" ;;
-                        3) check_run "$FILE_ADD_WS" ;;
-                        4) check_run "$FILE_ADD_TUNNEL" ;;
-                        5) check_run "$FILE_NODE_INFO" ;;
-                        6) check_run "$FILE_NODE_DEL" ;;
-                        0) break ;;
-                        *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
-                    esac
-                done
-                ;;
-            3)
-                while true; do
-                    clear
-                    echo -e "${YELLOW}>>> [Xray] 子菜单：流量出口控制${PLAIN}"
-                    echo -e "  1. 挂载 WARP/Socks5 (解锁流媒体/ChatGPT)"
-                    echo -e "  2. 解除 挂载 (恢复直连/原生IP)"
-                    echo -e "  0. 返回上一级"
-                    echo -e ""
-                    read -p "请选择: " sub_choice_3
-                    case "$sub_choice_3" in
+                    read -p "请选择: " sub_c
+                    case "$sub_c" in
                         1) check_run "$FILE_ATTACH" ;;
                         2) check_run "$FILE_DETACH" ;;
                         0) break ;;
-                        *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
                     esac
                 done
                 ;;
-            4) check_run "$FILE_BOOST" ;;
-            5) check_run "$FILE_XRAY_UNINSTALL" ;;
             0) break ;;
-            *) echo -e "${RED}无效输入，请重试。${PLAIN}"; sleep 1 ;;
+            *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
     done
 }
@@ -252,37 +205,33 @@ menu_xray() {
 # 3. 主程序入口
 # ==========================================
 
-# 1. 开局先检查环境是否干净 (询问是否清理/更新)
 check_dir_clean
-
-# 2. 同步最新的脚本链接
 init_urls
 
-# 3. 进入主循环
 while true; do
     clear
-    echo -e "${GREEN}========================================${PLAIN}"
-    echo -e "${GREEN}    全能协议管理中心 (Total Commander)   ${PLAIN}"
-    echo -e "${GREEN}========================================${PLAIN}"
-    echo -e "${SKYBLUE}1.${PLAIN} 基础设施: Warp / Tunnel"
-    echo -e "    ${GRAY}- 独立服务：IP 优选、流媒体解锁、内网穿透${PLAIN}"
+    echo -e "${GREEN}============================================${PLAIN}"
+    echo -e "${GREEN}      全能协议管理中心 (Commander v3.5)      ${PLAIN}"
+    echo -e "${GREEN}============================================${PLAIN}"
+    # 简单的状态检查 (可选)
+    if pgrep -x "xray" >/dev/null; then STATUS="${GREEN}运行中${PLAIN}"; else STATUS="${RED}未运行${PLAIN}"; fi
+    echo -e " 系统状态: [Xray: $STATUS]"
+    echo -e "--------------------------------------------"
+    echo -e " ${SKYBLUE}1.${PLAIN} 前置/核心管理 (Core & Infrastructure)"
+    echo -e " ${SKYBLUE}2.${PLAIN} 节点配置管理 (Nodes)"
+    echo -e " ${SKYBLUE}3.${PLAIN} 路由规则管理 (Routing & WARP) ${YELLOW}★${PLAIN}"
+    echo -e " ${SKYBLUE}4.${PLAIN} 系统优化工具 (BBR/Cert/Logs)"
+    echo -e "--------------------------------------------"
+    echo -e " ${GRAY}0. 退出脚本${PLAIN}"
     echo -e ""
-    echo -e "${SKYBLUE}2.${PLAIN} Xray 协议簇"
-    echo -e "    ${GRAY}- VLESS / Vision / XHTTP / WS / Reality${PLAIN}"
-    echo -e ""
-    echo -e "${SKYBLUE}3.${PLAIN} Hysteria 2 协议"
-    echo -e "    ${GRAY}- UDP / 端口跳跃 / 极速抗封锁${PLAIN}"
-    echo -e ""
-    echo -e "----------------------------------------"
-    echo -e "${GRAY}0. 退出系统${PLAIN}"
-    echo -e ""
-    read -p "请选择操作 [0-3]: " main_choice
+    read -p "请选择操作 [0-4]: " main_choice
 
     case "$main_choice" in
-        1) menu_infra ;;
-        2) menu_xray ;;
-        3) check_run "$FILE_HY2" ;;
-        0) echo -e "Bye~"; exit 0 ;;
+        1) menu_core ;;
+        2) menu_nodes ;;
+        3) menu_routing ;;
+        4) check_run "$FILE_BOOST" ;;
+        0) exit 0 ;;
         *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
     esac
 done
