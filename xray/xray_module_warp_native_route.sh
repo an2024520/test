@@ -41,13 +41,15 @@ check_dependencies() {
     fi
 }
 
-# --- 3. 核心功能：获取 WARP 凭证 (调试版) ---
+# --- 3. 核心功能：获取 WARP 凭证 ---
 get_warp_credentials() {
     check_dependencies
     clear
     echo -e "${GREEN}================ Native WARP 凭证配置 ================${PLAIN}"
-    echo -e " 1. 自动注册 (使用 wgcf v2.2.19 - 与旧脚本一致)"
-    echo -e " 2. 手动输入 (已有账号)"
+    echo -e "Native 模式需要 WARP 账户的三要素：Private Key, IPv6 Address, Reserved"
+    echo -e "----------------------------------------------------"
+    echo -e " 1. 自动注册 (推荐: 使用 wgcf 生成独享账号)"
+    echo -e " 2. 手动输入 (已有账号，需填入完整信息)"
     echo -e "----------------------------------------------------"
     read -p "请选择: " choice
 
@@ -56,43 +58,37 @@ get_warp_credentials() {
     local wp_res=""
 
     if [ "$choice" == "1" ]; then
-        echo -e "${YELLOW}正在准备 wgcf 环境 (v2.2.19)...${PLAIN}"
+        echo -e "${YELLOW}正在准备 wgcf 环境...${PLAIN}"
         
         local arch=$(uname -m)
-        local wgcf_url=""
-        # 强制使用与旧脚本一致的 v2.2.19 版本
+        local wgcf_arch="amd64"
         case "$arch" in
-            aarch64) wgcf_url="https://github.com/ViRb3/wgcf/releases/download/v2.2.19/wgcf_2.2.19_linux_arm64" ;;
-            x86_64)  wgcf_url="https://github.com/ViRb3/wgcf/releases/download/v2.2.19/wgcf_2.2.19_linux_amd64" ;;
+            aarch64) wgcf_arch="arm64" ;;
+            x86_64) wgcf_arch="amd64" ;;
             *) echo "不支持的架构: $arch"; return 1 ;;
         esac
 
         local tmp_dir=$(mktemp -d)
         pushd "$tmp_dir" >/dev/null || return
 
-        wget -O wgcf "$wgcf_url"
+        # 下载官方 wgcf (安全可靠)
+        wget -qO wgcf "https://github.com/ViRb3/wgcf/releases/latest/download/wgcf_linux_${wgcf_arch}"
         chmod +x wgcf
         
-        echo -e "${YELLOW}正在向 Cloudflare 注册... (已开启详细日志)${PLAIN}"
-        
-        # 关键修改：去掉 >/dev/null，让用户看到报错！
-        ./wgcf register --accept-tos
-        
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}注册命令执行失败！请截图上方错误信息。${PLAIN}"
-            popd >/dev/null; rm -rf "$tmp_dir"; read -p "按回车退出..."; return 1
-        fi
-
-        ./wgcf generate
+        echo "正在向 Cloudflare 注册新账户..."
+        ./wgcf register --accept-tos >/dev/null 2>&1
+        ./wgcf generate >/dev/null 2>&1
 
         if [ ! -f wgcf-profile.conf ]; then
-            echo -e "${RED}错误：无法生成配置文件。${PLAIN}"
+            echo -e "${RED}错误：注册失败。Cloudflare 可能限制了本机 IP 注册。${PLAIN}"
+            echo -e "${YELLOW}建议：在本地电脑运行 wgcf 注册好后，使用【手动输入】模式填入。${PLAIN}"
             popd >/dev/null; rm -rf "$tmp_dir"; read -p "按回车退出..."; return 1
         fi
 
-        # ... (后续提取逻辑不变) ...
+        # 提取 PrivateKey
         wp_key=$(grep 'PrivateKey' wgcf-profile.conf | cut -d ' ' -f 3 | tr -d '\n\r ')
         
+        # 提取 Address (自动获取 Cloudflare 分配给你的唯一 v6 地址)
         local raw_addr=$(grep 'Address' wgcf-profile.conf | cut -d '=' -f 2 | tr -d ' ')
         if [[ "$raw_addr" == *","* ]]; then
             wp_ip=$(echo "$raw_addr" | awk -F',' '{print $2}' | cut -d'/' -f1 | tr -d '\n\r ')
@@ -100,6 +96,7 @@ get_warp_credentials() {
             wp_ip=$(echo "$raw_addr" | cut -d'/' -f1 | tr -d '\n\r ')
         fi
 
+        # 提取 Reserved (Python 算法)
         local client_id=$(grep "client_id" wgcf-account.toml | cut -d '"' -f 2)
         if [ -n "$client_id" ]; then
             wp_res=$(python3 -c "import base64; d=base64.b64decode('${client_id}'); print(f'[{d[0]}, {d[1]}, {d[2]}]')")
@@ -107,7 +104,7 @@ get_warp_credentials() {
             wp_res="[0, 0, 0]"
         fi
 
-        echo -e "${GREEN}注册成功！${PLAIN}"
+        echo -e "${GREEN}注册成功！已获取独享账号。${PLAIN}"
         echo "Private Key: $wp_key"
         echo "IPv6 Addr:   $wp_ip"
         echo "Reserved:    $wp_res"
@@ -116,12 +113,15 @@ get_warp_credentials() {
         rm -rf "$tmp_dir"
 
     elif [ "$choice" == "2" ]; then
-        # ... (手动模式逻辑保持不变) ...
         echo -e "${YELLOW}请输入 Private Key (私钥):${PLAIN}"
         read -r wp_key
+        
         echo -e "${YELLOW}请输入 WARP IPv6 地址 (不带 /128):${PLAIN}"
+        echo -e "(例如: 2606:4700:110:xxxx:xxxx:xxxx:xxxx:xxxx)"
         read -r wp_ip
+        
         echo -e "${YELLOW}请输入 Reserved 值 (格式如 [123, 45, 67]):${PLAIN}"
+        echo -e "(提示: 如果不知道，可尝试填 [0, 0, 0])"
         read -r wp_res
         
         if [ -z "$wp_key" ] || [ -z "$wp_ip" ]; then
