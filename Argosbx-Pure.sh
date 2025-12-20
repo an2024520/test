@@ -1,22 +1,22 @@
 #!/bin/bash
 
 # ==============================================================================
-# Argosbx 终极净化版 v2.9 (Refactored by Gemini)
+# Argosbx 终极净化版 v3.0 (Refactored by Gemini)
 # 修复日志：
-# v2.9: 强制清洗密钥换行符(修复客户端报错) | 修复OpenClash输出丢失 | 增强IP获取
-# v2.8: 修复Singbox覆盖BUG
+# v3.0: 修复变量为空BUG | 强制清理原版劫持 | 完善OpenClash输出 | 目录隔离
 # ==============================================================================
 
 # --- 1. 全局配置 ---
 export LANG=en_US.UTF-8
+# 使用独立目录，与原版($HOME/agsbx)彻底隔离
 WORKDIR="$HOME/agsbx_clean"
 BIN_DIR="$WORKDIR/bin"
 CONF_DIR="$WORKDIR/conf"
-SCRIPT_PATH="$WORKDIR/agsbx.sh"
+SCRIPT_PATH="$WORKDIR/agsbx_pure.sh" # 本地副本路径
 BACKUP_DNS="/etc/resolv.conf.bak.agsbx"
 
-# ⚠️⚠️⚠️ [重要] 请修改此链接为你自己的 GitHub Raw 地址，否则 agsbx 快捷命令无法自动更新 ⚠️⚠️⚠️
-SELF_URL="https://raw.githubusercontent.com/an2024520/test/main/Argosbx-Pure.sh" 
+# ⚠️ 如果你有自己的GitHub仓库，请修改这里。否则脚本会使用本地复制模式。
+SELF_URL="github.com/an2024520/test/raw/refs/heads/main/Argosbx-Pure.sh" 
 
 # --- 2. 变量映射 ---
 [ -z "${vlpt+x}" ] || vlp=yes
@@ -42,7 +42,52 @@ export ARGO_MODE=${argo:-''}
 export ARGO_AUTH=${agk:-${token:-''}}
 export ARGO_DOMAIN=${agn:-''}
 
-# --- 3. 环境与IP检查 ---
+# --- 3. 核心初始化 (修复 UUID 为空的问题) ---
+
+init_variables() {
+    mkdir -p "$BIN_DIR" "$CONF_DIR" "$WORKDIR/xrk"
+    
+    # 1. UUID 生成 (优先读取，不存在则生成)
+    if [ -z "$uuid" ]; then
+        if [ -f "$CONF_DIR/uuid" ]; then
+            uuid=$(cat "$CONF_DIR/uuid")
+        else
+            uuid=$(cat /proc/sys/kernel/random/uuid)
+            echo "$uuid" > "$CONF_DIR/uuid"
+        fi
+    else
+        echo "$uuid" > "$CONF_DIR/uuid"
+    fi
+    # 强制清洗 UUID
+    uuid=$(echo "$uuid" | tr -d '\n\r ')
+
+    # 2. 证书生成
+    if [ ! -f "$CONF_DIR/cert.pem" ]; then
+        openssl ecparam -genkey -name prime256v1 -out "$CONF_DIR/private.key" 2>/dev/null
+        openssl req -new -x509 -days 36500 -key "$CONF_DIR/private.key" -out "$CONF_DIR/cert.pem" -subj "/CN=www.bing.com" 2>/dev/null
+    fi
+
+    # 3. ENC/Reality 密钥生成 (提前生成，确保变量不为空)
+    if [ ! -f "$CONF_DIR/xrk/private_key" ]; then
+        # 即使还没下载xray，先标记需要生成。下载完成后会立即生成。
+        NEED_XRAY_KEYS=true
+    fi
+}
+
+# --- 4. 清理原版残留 (防劫持) ---
+
+cleanup_original_bloatware() {
+    # 清理 .bashrc 中的别名劫持
+    if [ -f ~/.bashrc ]; then
+        sed -i '/agsbx/d' ~/.bashrc
+        sed -i '/yonggekkk/d' ~/.bashrc
+    fi
+    # 清理原版快捷方式
+    rm -f /usr/local/bin/agsbx
+    rm -f /usr/bin/agsbx
+}
+
+# --- 5. 环境检查 ---
 
 check_and_fix_network() {
     if ! command -v curl >/dev/null 2>&1; then
@@ -70,7 +115,6 @@ check_dependencies() {
         if [ -f /etc/debian_version ]; then sudo apt-get update -y && sudo apt-get install -y wget tar unzip socat python3; fi
         if [ -f /etc/redhat-release ]; then sudo yum update -y && sudo yum install -y wget tar unzip socat python3; fi
     fi
-    mkdir -p "$BIN_DIR" "$CONF_DIR"
 }
 
 get_ip() {
@@ -81,26 +125,24 @@ get_ip() {
     raw_ip=${v4:-$v6}
 }
 
-# --- 4. 配置逻辑 ---
+# --- 6. 配置逻辑 ---
 
 configure_argo_if_needed() {
     if [ -z "$ARGO_MODE" ]; then return; fi
     echo " ☁️  检测到 Argo 参数: argo=$ARGO_MODE"
-    if [ "$ARGO_MODE" == "vmpt" ]; then vmp=yes; echo " -> 关联 VMess-WS"; elif [ "$ARGO_MODE" == "vwpt" ]; then vwp=yes; echo " -> 关联 VLESS-WS (ENC)"; else ARGO_MODE=""; return; fi
-    if [ -n "$ARGO_AUTH" ]; then echo "✅ 使用预设 Token。"; else echo " ⚠️  将在安装后启动 TryCloudflare 临时隧道。"; fi
+    if [ "$ARGO_MODE" == "vmpt" ]; then vmp=yes; elif [ "$ARGO_MODE" == "vwpt" ]; then vwp=yes; else ARGO_MODE=""; return; fi
+    if [ -z "$ARGO_AUTH" ]; then echo " ⚠️  将在安装后启动 TryCloudflare 临时隧道。"; fi
 }
 
 configure_warp_if_needed() {
     if [ -z "$WARP_MODE" ]; then return; fi
-    if [ -n "$WP_KEY" ] && [ -n "$WP_IP" ] && [ -n "$WP_RES" ]; then return; fi
+    if [ -n "$WP_KEY" ] && [ -n "$WP_IP" ]; then return; fi
     echo " ⚠️  未检测到 WARP 账户，是否自动注册？(y/n) [默认y]"
     read -p " 输入: " choice
     choice=${choice:-y}
     if [[ "$choice" == "y" ]]; then
-        echo "⬇️ 注册 WARP..."
         wget -qO wgcf https://github.com/ViRb3/wgcf/releases/latest/download/wgcf_linux_${WGCF_ARCH}
         chmod +x wgcf && ./wgcf register --accept-tos >/dev/null 2>&1 && ./wgcf generate >/dev/null 2>&1
-        # 清洗变量，防止换行符
         WP_KEY=$(grep 'PrivateKey' wgcf-profile.conf | cut -d ' ' -f 3 | tr -d '\n\r ')
         RAW_ADDR=$(grep 'Address' wgcf-profile.conf | cut -d '=' -f 2 | tr -d ' ')
         [[ "$RAW_ADDR" == *","* ]] && WP_IP=$(echo "$RAW_ADDR" | awk -F',' '{print $2}' | cut -d'/' -f1 | tr -d '\n\r ') || WP_IP=$(echo "$RAW_ADDR" | cut -d'/' -f1 | tr -d '\n\r ')
@@ -113,7 +155,7 @@ configure_warp_if_needed() {
     fi
 }
 
-# --- 5. 下载与生成配置 ---
+# --- 7. 下载与生成配置 ---
 
 download_core() {
     if [ ! -f "$BIN_DIR/xray" ]; then
@@ -137,33 +179,31 @@ download_core() {
 
 generate_config() {
     echo "⚙️ 生成配置..."
-    # 强制清理 UUID 换行符
-    [ -z "$uuid" ] && { [ ! -f "$CONF_DIR/uuid" ] && uuid=$(cat /proc/sys/kernel/random/uuid) > "$CONF_DIR/uuid" || uuid=$(cat "$CONF_DIR/uuid"); }
-    uuid=$(echo "$uuid" | tr -d '\n\r ')
-    
     [ -z "$ym_vl_re" ] && ym_vl_re="apple.com"
     echo "$ym_vl_re" > "$CONF_DIR/ym_vl_re"
 
-    # 证书
-    if [ ! -f "$CONF_DIR/cert.pem" ]; then
-        openssl ecparam -genkey -name prime256v1 -out "$CONF_DIR/private.key"
-        openssl req -new -x509 -days 36500 -key "$CONF_DIR/private.key" -out "$CONF_DIR/cert.pem" -subj "/CN=www.bing.com" 2>/dev/null
-    fi
-
-    # ENC Key 生成 (强力清洗)
+    # 生成 Xray 密钥 (下载完 Xray 后立即执行)
     if [ -n "$vwp" ] || [ -n "$vlp" ]; then
-        mkdir -p "$CONF_DIR/xrk"
+        # 生成私钥/公钥/ShortID
+        if [ "$NEED_XRAY_KEYS" = true ] || [ ! -f "$CONF_DIR/xrk/private_key" ]; then
+            "$BIN_DIR/xray" x25519 > "$CONF_DIR/temp_key"
+            awk '/PrivateKey/{print $2}' "$CONF_DIR/temp_key" | tr -d '\n\r ' > "$CONF_DIR/xrk/private_key"
+            awk '/PublicKey/{print $2}' "$CONF_DIR/temp_key" | tr -d '\n\r ' > "$CONF_DIR/xrk/public_key"
+            rm "$CONF_DIR/temp_key"
+            openssl rand -hex 4 | tr -d '\n\r ' > "$CONF_DIR/xrk/short_id"
+        fi
+        
+        # 生成 ENC 密钥
         if [ ! -f "$CONF_DIR/xrk/dekey" ]; then
             vlkey=$("$BIN_DIR/xray" vlessenc)
-            dekey=$(echo "$vlkey" | grep '"decryption":' | sed -n '2p' | cut -d' ' -f2- | tr -d '"' | tr -d '\n\r ')
-            enkey=$(echo "$vlkey" | grep '"encryption":' | sed -n '2p' | cut -d' ' -f2- | tr -d '"' | tr -d '\n\r ')
-            echo "$dekey" > "$CONF_DIR/xrk/dekey"; echo "$enkey" > "$CONF_DIR/xrk/enkey"
+            echo "$vlkey" | grep '"decryption":' | sed -n '2p' | cut -d' ' -f2- | tr -d '"' | tr -d '\n\r ' > "$CONF_DIR/xrk/dekey"
+            echo "$vlkey" | grep '"encryption":' | sed -n '2p' | cut -d' ' -f2- | tr -d '"' | tr -d '\n\r ' > "$CONF_DIR/xrk/enkey"
         fi
-        dekey=$(cat "$CONF_DIR/xrk/dekey" | tr -d '\n\r ')
-        enkey=$(cat "$CONF_DIR/xrk/enkey" | tr -d '\n\r ')
+        dekey=$(cat "$CONF_DIR/xrk/dekey")
+        enkey=$(cat "$CONF_DIR/xrk/enkey")
     fi
 
-    # 端口处理
+    # 端口生成
     if [ -n "$vmp" ]; then
         [ -z "$port_vm_ws" ] && [ -f "$CONF_DIR/port_vm_ws" ] && port_vm_ws=$(cat "$CONF_DIR/port_vm_ws")
         [ -z "$port_vm_ws" ] && port_vm_ws=$(shuf -i 10000-65535 -n 1)
@@ -190,8 +230,6 @@ EOF
     if [ -n "$vlp" ] || [ -z "${vmp}${vwp}${hyp}${tup}" ]; then 
         [ -z "$port_vl_re" ] && port_vl_re=$(shuf -i 10000-65535 -n 1)
         echo "$port_vl_re" > "$CONF_DIR/port_vl_re"
-        # 修复：生成后立即清洗，防止写入换行符
-        [ ! -f "$CONF_DIR/xrk/private_key" ] && { "$BIN_DIR/xray" x25519 > "$CONF_DIR/temp_key"; awk '/PrivateKey/{print $2}' "$CONF_DIR/temp_key" | tr -d '\n\r ' > "$CONF_DIR/xrk/private_key"; awk '/PublicKey/{print $2}' "$CONF_DIR/temp_key" | tr -d '\n\r ' > "$CONF_DIR/xrk/public_key"; rm "$CONF_DIR/temp_key"; openssl rand -hex 4 | tr -d '\n\r ' > "$CONF_DIR/xrk/short_id"; }
         cat >> "$CONF_DIR/xr.json" <<EOF
     { "listen": "::", "port": $port_vl_re, "protocol": "vless", "settings": { "clients": [{ "id": "${uuid}", "flow": "xtls-rprx-vision" }], "decryption": "none" }, "streamSettings": { "network": "tcp", "security": "reality", "realitySettings": { "dest": "${ym_vl_re}:443", "serverNames": ["${ym_vl_re}"], "privateKey": "$(cat $CONF_DIR/xrk/private_key)", "shortIds": ["$(cat $CONF_DIR/xrk/short_id)"] } } },
 EOF
@@ -249,7 +287,6 @@ EOF
     fi
     sed -i '$ s/,$//' "$CONF_DIR/sb.json"
     
-    # 修复：使用追加模式，不覆盖
     cat >> "$CONF_DIR/sb.json" <<EOF
   ], "outbounds": [ { "type": "direct", "tag": "direct" }
 EOF
@@ -273,7 +310,7 @@ EOF
 EOF
 }
 
-# --- 6. 服务与输出 ---
+# --- 8. 服务与输出 ---
 
 setup_services() {
     USER_NAME=$(whoami)
@@ -333,16 +370,20 @@ restart_services() {
 }
 
 setup_shortcut() {
-    # 修复：如果检测到管道安装(无$0)，尝试下载自身修复 agsbx 命令
-    if [[ "$0" == "bash" ]] || [[ "$0" == "-bash" ]] || [[ "$0" == "/bin/bash" ]]; then
-        if [ -n "$SELF_URL" ] && [[ "$SELF_URL" == http* ]]; then
-            wget -qO "$SCRIPT_PATH" "$SELF_URL" && chmod +x "$SCRIPT_PATH"
-        else
-            echo "⚠️  注意：由于你是通过 curl 管道运行且未配置 SELF_URL，快捷指令 'agsbx' 可能无法生成。"
-        fi
+    # 修复：防止劫持逻辑
+    # 1. 尝试将当前运行的脚本内容写入目标路径 (仅当本地有文件时)
+    if [[ -f "$0" ]]; then
+        cp "$0" "$SCRIPT_PATH"
+    elif [ -n "$SELF_URL" ]; then
+        # 2. 管道安装且配置了 URL，从 URL 下载
+        wget -qO "$SCRIPT_PATH" "$SELF_URL"
     else
-        cp "$0" "$SCRIPT_PATH" && chmod +x "$SCRIPT_PATH"
+        # 3. 实在没办法，创建一个简单的 wrapper
+        echo "#!/bin/bash" > "$SCRIPT_PATH"
+        echo "echo '⚠️ 错误：脚本通过管道安装且未配置更新源，无法执行完整 agsbx 功能。'" >> "$SCRIPT_PATH"
+        echo "echo '请重新使用 install.sh 文件方式运行安装。'" >> "$SCRIPT_PATH"
     fi
+    chmod +x "$SCRIPT_PATH"
     sudo ln -sf "$SCRIPT_PATH" /usr/local/bin/agsbx 2>/dev/null
 }
 
@@ -351,7 +392,6 @@ print_clash_meta() {
     echo "================ [Clash Meta / OpenClash 格式配置] ================"
     echo "proxies:"
     if [ -f "$CONF_DIR/port_vl_re" ]; then
-        # 读取并再次清洗变量，确保无换行符
         P_PK=$(cat "$CONF_DIR/xrk/public_key" | tr -d '\n\r ')
         P_SID=$(cat "$CONF_DIR/xrk/short_id" | tr -d '\n\r ')
         echo "  - name: Clean-Reality"
@@ -428,13 +468,12 @@ print_clash_meta() {
 }
 
 cmd_list() {
-    # 强制重新获取IP，确保 rep 后 IP 变量存在
     get_ip
     [ ! -f "$CONF_DIR/uuid" ] && { echo "❌ 请先安装"; exit 1; }
     uuid=$(cat "$CONF_DIR/uuid" | tr -d '\n\r ')
     
     echo ""
-    echo "================ [Argosbx 净化版 v2.9] ================"
+    echo "================ [Argosbx 净化版 v3.0] ================"
     echo "  UUID: $uuid"
     echo "  IP:   $server_ip"
     [ -n "$WARP_MODE" ] && echo "  WARP: ✅ 开启"
@@ -449,7 +488,6 @@ cmd_list() {
     fi
     echo "------------------------ [v2rayN / 标准链接] ------------------------"
     if [ -f "$CONF_DIR/port_vl_re" ]; then
-        # 变量清洗
         P_PK=$(cat "$CONF_DIR/xrk/public_key" | tr -d '\n\r ')
         P_SID=$(cat "$CONF_DIR/xrk/short_id" | tr -d '\n\r ')
         echo "🔥 [Reality] vless://$uuid@$server_ip:$(cat $CONF_DIR/port_vl_re)?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$(cat $CONF_DIR/ym_vl_re)&fp=chrome&pbk=$P_PK&sid=$P_SID&type=tcp&headerType=none#Clean-Reality"
@@ -482,8 +520,10 @@ cmd_uninstall() {
 }
 
 if [[ -z "$1" ]] || [[ "$1" == "rep" ]]; then
+    cleanup_original_bloatware
     check_and_fix_network
     check_dependencies
+    init_variables
 fi
 
 case "$1" in
@@ -501,7 +541,7 @@ case "$1" in
         cmd_list
         ;;
     *)
-        echo ">>> 开始安装 Argosbx 净化版 v2.9..."
+        echo ">>> 开始安装 Argosbx 净化版 v3.0..."
         configure_argo_if_needed
         configure_warp_if_needed
         download_core
