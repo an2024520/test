@@ -121,6 +121,7 @@ get_warp_credentials() {
         read -r wp_ip
         
         echo -e "${YELLOW}请输入 Reserved 值 (格式如 [123, 45, 67]):${PLAIN}"
+        echo -e "(提示: 如果不知道，可尝试填 [0, 0, 0])"
         read -r wp_res
         
         if [ -z "$wp_key" ] || [ -z "$wp_ip" ]; then
@@ -309,8 +310,8 @@ show_warp_menu() {
         echo -e " 凭证状态: [$status_text]   当前模式: [$current_mode]"
         echo -e "----------------------------------------------------"
         echo -e " [基础账号]"
-        echo -e " 1. 自动注册 (推荐: 获取独享 IP 和密钥)"
-        echo -e " 2. 手动输入 (填入你自己的 WARP 凭证)"
+        echo -e " 1. 注册/配置 WARP 凭证 (自动获取 或 手动输入)" # <--- 修正了这里的文案
+        echo -e " 2. 查看当前凭证信息"
         echo -e ""
         echo -e " [策略模式 - 单选]"
         echo -e " 3. ${SKYBLUE}模式一：智能流媒体分流 (推荐)${PLAIN}"
@@ -329,7 +330,7 @@ show_warp_menu() {
         read -p "请输入选项: " choice
 
         case "$choice" in
-            1) get_warp_credentials ;;
+            1) get_warp_credentials ;; # 进入后会再次询问 1.自动 2.手动
             2) 
                 if [ -f "$WARP_CONF_FILE" ]; then
                     source "$WARP_CONF_FILE"
@@ -337,7 +338,7 @@ show_warp_menu() {
                     echo -e "IPv6 Address:${YELLOW}$WP_IP${PLAIN}"
                     echo -e "Reserved:    ${YELLOW}$WP_RES${PLAIN}"
                 else
-                    echo "暂无信息"
+                    echo "暂无信息，请先选择选项 1 进行配置。"
                 fi
                 read -p "按回车继续..." 
                 ;;
@@ -362,5 +363,5 @@ show_warp_menu() {
     done
 }
 
-# 脚本直接执行入口 (方便 menu.sh 调用)
+# 脚本直接执行入口
 show_warp_menu
