@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ==============================================================================
-# Argosbx 终极净化版 v3.5 (Refactored by Gemini)
+# Argosbx 终极净化版 v3.6 (Refactored by Gemini)
 # 修复日志：
-# v3.5: 重构 List 模块 (移植 jq 解析逻辑) | 快捷指令强制落地 | 修复 Reality 公钥
-# v3.4: 修复目录权限
+# v3.6: 🚨 修复 REP 模式缺失下载步骤导致的空密钥问题 | 完善逻辑闭环
+# v3.5: 重构 List 模块 (jq)
 # ==============================================================================
 
 # --- 1. 全局配置 ---
@@ -15,8 +15,8 @@ CONF_DIR="$WORKDIR/conf"
 SCRIPT_PATH="$WORKDIR/agsbx_pure.sh"
 BACKUP_DNS="/etc/resolv.conf.bak.agsbx"
 
-# ⚠️ 快捷指令自更新地址 (必填，用于 agsbx 命令修复)
-SELF_URL="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/Argosbx_Pure.sh"
+# ⚠️ 快捷指令自更新地址 (修正为标准 raw 格式)
+SELF_URL="https://raw.githubusercontent.com/an2024520/test/main/Argosbx_Pure.sh"
 
 # --- 2. 变量映射 ---
 [ -z "${vlpt+x}" ] || vlp=yes
@@ -87,7 +87,6 @@ cleanup_original_bloatware() {
 # --- 5. 环境检查 ---
 
 check_and_fix_network() {
-    # 增加 jq 依赖
     if ! command -v jq >/dev/null 2>&1; then
         if [ -f /etc/debian_version ]; then 
             sudo apt-get update -y && sudo apt-get install -y curl wget tar unzip socat openssl iptables jq
@@ -95,7 +94,6 @@ check_and_fix_network() {
             sudo yum update -y && sudo yum install -y curl wget tar unzip socat openssl iptables jq
         fi
     fi
-    
     if ! curl -4 -s --connect-timeout 2 https://1.1.1.1 >/dev/null && curl -6 -s --connect-timeout 2 https://2606:4700:4700::1111 >/dev/null; then
         if [ ! -f "$BACKUP_DNS" ]; then
             echo " ⚠️  检测到纯 IPv6 环境，正在临时优化 DNS..."
@@ -155,20 +153,24 @@ configure_warp_if_needed() {
 # --- 7. 下载与生成配置 ---
 
 download_core() {
-    if [ ! -f "$BIN_DIR/xray" ]; then
+    # 智能下载：只有文件不存在或大小为0时才下载
+    if [ ! -s "$BIN_DIR/xray" ]; then
+        echo "⬇️ [Xray] 下载中..."
         local latest=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep "tag_name" | cut -d '"' -f 4)
         wget -qO "$WORKDIR/xray.zip" "https://github.com/XTLS/Xray-core/releases/download/${latest}/Xray-linux-${XRAY_ARCH}.zip"
         unzip -o "$WORKDIR/xray.zip" -d "$WORKDIR/temp_xray" >/dev/null
         mv "$WORKDIR/temp_xray/xray" "$BIN_DIR/xray"; chmod +x "$BIN_DIR/xray"; mv "$WORKDIR/temp_xray/geo"* "$BIN_DIR/" 2>/dev/null; rm -rf "$WORKDIR/xray.zip" "$WORKDIR/temp_xray"
     fi
-    if [ ! -f "$BIN_DIR/sing-box" ]; then
+    if [ ! -s "$BIN_DIR/sing-box" ]; then
+        echo "⬇️ [Sing-box] 下载中..."
         local latest=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep "tag_name" | cut -d '"' -f 4)
         local ver_num=${latest#v}
         wget -qO "$WORKDIR/sb.tar.gz" "https://github.com/SagerNet/sing-box/releases/download/${latest}/sing-box-${ver_num}-linux-${SB_ARCH}.tar.gz"
         tar -zxvf "$WORKDIR/sb.tar.gz" -C "$WORKDIR" >/dev/null
         mv "$WORKDIR"/sing-box*linux*/sing-box "$BIN_DIR/sing-box"; chmod +x "$BIN_DIR/sing-box"; rm -rf "$WORKDIR/sb.tar.gz" "$WORKDIR"/sing-box*linux*
     fi
-    if [ -n "$ARGO_MODE" ] && [ ! -f "$BIN_DIR/cloudflared" ]; then
+    if [ -n "$ARGO_MODE" ] && [ ! -s "$BIN_DIR/cloudflared" ]; then
+        echo "⬇️ [Cloudflared] 下载中..."
         wget -qO "$BIN_DIR/cloudflared" "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}"
         chmod +x "$BIN_DIR/cloudflared"
     fi
@@ -179,27 +181,39 @@ generate_config() {
     [ -z "$ym_vl_re" ] && ym_vl_re="apple.com"
     echo "$ym_vl_re" > "$CONF_DIR/ym_vl_re"
 
-    # 生成 Xray 密钥 (这里只需确保文件有内容，内容正确与否交给 Xray 自己)
+    # 生成 Xray 密钥 (核心修复：先确保有Xray)
     if [ -n "$vwp" ] || [ -n "$vlp" ]; then
-        # 如果不存在私钥，生成之
+        if [ ! -x "$BIN_DIR/xray" ]; then
+            echo "❌ 严重错误：Xray 二进制文件缺失！请检查下载网络。"
+            exit 1
+        fi
+
+        # 如果密钥文件为空，尝试生成
         if [ ! -s "$CONF_DIR/xrk/private_key" ]; then
             "$BIN_DIR/xray" x25519 > "$CONF_DIR/temp_key"
+            # 暴力提取：不依赖格式，只取冒号后的内容
             grep "Private Key" "$CONF_DIR/temp_key" | cut -d: -f2 | tr -d ' \n\r' > "$CONF_DIR/xrk/private_key"
             grep "Public Key" "$CONF_DIR/temp_key" | cut -d: -f2 | tr -d ' \n\r' > "$CONF_DIR/xrk/public_key"
             rm "$CONF_DIR/temp_key"
             openssl rand -hex 4 | tr -d '\n\r ' > "$CONF_DIR/xrk/short_id"
         fi
-        # ENC 密钥
+        
+        # 再次检查生成结果
+        if [ ! -s "$CONF_DIR/xrk/public_key" ]; then
+             echo "❌ 密钥生成失败，Xray 运行异常。"
+             # 尝试输出版本信息用于调试
+             "$BIN_DIR/xray" version
+        fi
+
         if [ ! -f "$CONF_DIR/xrk/dekey" ]; then
             vlkey=$("$BIN_DIR/xray" vlessenc)
             echo "$vlkey" | grep '"decryption":' | cut -d: -f2 | tr -d ' ",\n\r' > "$CONF_DIR/xrk/dekey"
             echo "$vlkey" | grep '"encryption":' | cut -d: -f2 | tr -d ' ",\n\r' > "$CONF_DIR/xrk/enkey"
         fi
         dekey=$(cat "$CONF_DIR/xrk/dekey")
-        # enkey 变量在 list 时动态获取
     fi
 
-    # 端口生成 (包含 UDP 放行)
+    # 端口生成与放行
     open_port() {
         if command -v iptables >/dev/null; then
             iptables -I INPUT -p tcp --dport $1 -j ACCEPT 2>/dev/null
@@ -379,108 +393,77 @@ restart_services() {
 }
 
 setup_shortcut() {
-    # 强制落地策略：无论如何，先把脚本内容写入磁盘
-    # 1. 尝试下载
-    if [ -n "$SELF_URL" ]; then
-        wget -qO "$SCRIPT_PATH" "$SELF_URL"
-    fi
-    
-    # 2. 如果下载失败（文件不存在或为空），尝试复制 $0
-    if [ ! -s "$SCRIPT_PATH" ] && [[ -f "$0" ]] && [[ "$0" != "bash" ]]; then
+    # 强制写入自身到文件系统，确保快捷指令可用
+    if [[ -f "$0" ]] && [[ "$0" != "bash" ]]; then
         cp "$0" "$SCRIPT_PATH"
-    fi
-    
-    # 3. 赋予权限并链接
-    if [ -s "$SCRIPT_PATH" ]; then
-        chmod +x "$SCRIPT_PATH"
-        sudo ln -sf "$SCRIPT_PATH" /usr/local/bin/agsbx 2>/dev/null
-        hash -r 2>/dev/null
+    elif [ -n "$SELF_URL" ] && wget --spider -q "$SELF_URL"; then
+        wget -qO "$SCRIPT_PATH" "$SELF_URL"
     else
-        echo "⚠️ 警告：无法下载或复制脚本到 $SCRIPT_PATH，'agsbx' 命令可能不可用。"
+        cat > "$SCRIPT_PATH" <<EOF
+#!/bin/bash
+echo "⚠️ 错误：快捷指令未正确安装。请使用 'wget -O install.sh $SELF_URL && bash install.sh' 安装。"
+EOF
     fi
+    chmod +x "$SCRIPT_PATH"
+    sudo ln -sf "$SCRIPT_PATH" /usr/local/bin/agsbx 2>/dev/null
+    hash -r 2>/dev/null
 }
 
-# --- 9. 核心 List 逻辑 (JQ 重构版) ---
+# --- 9. List 逻辑 (JQ 重构版) ---
 
 cmd_list() {
     get_ip
     echo ""
-    echo "================ [Argosbx 净化版 v3.5] ================"
+    echo "================ [Argosbx 净化版 v3.6] ================"
     echo "  IP: $server_ip"
     
-    # --- Argo 信息预处理 ---
     ARGO_URL=""
     if systemctl is-active --quiet argo-clean; then
         echo "  Argo: ✅ 运行中"
-        if [ -n "$ARGO_DOMAIN" ]; then
-            ARGO_URL="$ARGO_DOMAIN"
-        else
-            ARGO_URL=$(journalctl -u argo-clean -n 20 --no-pager | grep -o 'https://.*\.trycloudflare\.com' | tail -n 1 | sed 's/https:\/\///')
-        fi
+        if [ -n "$ARGO_DOMAIN" ]; then ARGO_URL="$ARGO_DOMAIN"; else ARGO_URL=$(journalctl -u argo-clean -n 20 --no-pager | grep -o 'https://.*\.trycloudflare\.com' | tail -n 1 | sed 's/https:\/\///'); fi
         [ -n "$ARGO_URL" ] && echo "  域名: $ARGO_URL"
     fi
     echo "------------------------ [v2rayN / 标准链接] ------------------------"
 
-    # --- 解析 Xray 配置 (基于 config.json) ---
     if [ -f "$CONF_DIR/xr.json" ]; then
-        # 遍历所有 inbounds
-        # 使用 base64 避免换行符导致的 jq 遍历错误
         for row in $(jq -r '.inbounds[] | @base64' "$CONF_DIR/xr.json"); do
             _jq() { echo ${row} | base64 --decode | jq -r ${1}; }
+            PROTO=$(_jq '.protocol'); TAG=$(_jq '.tag'); PORT=$(_jq '.port')
             
-            PROTO=$(_jq '.protocol')
-            TAG=$(_jq '.tag')
-            PORT=$(_jq '.port')
-            
-            # 1. Reality
             if [[ "$TAG" == "vless-reality" ]]; then
                 UUID=$(_jq '.settings.clients[0].id')
                 SNI=$(_jq '.streamSettings.realitySettings.serverNames[0]')
                 SID=$(_jq '.streamSettings.realitySettings.shortIds[0]')
-                # 核心：直接用私钥反推公钥，不再依赖安装时的变量
                 PRI_KEY=$(_jq '.streamSettings.realitySettings.privateKey')
                 PUB_KEY=$("$BIN_DIR/xray" x25519 -i "$PRI_KEY" | grep "Public Key" | cut -d: -f2 | tr -d ' \n\r')
                 
                 echo "🔥 [Reality] vless://$UUID@$raw_ip:$PORT?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$SNI&fp=chrome&pbk=$PUB_KEY&sid=$SID&type=tcp&headerType=none#Clean-Reality"
-                
-                # 缓存给 OpenClash 用
                 REALITY_OC="  - name: Clean-Reality\n    type: vless\n    server: $raw_ip\n    port: $PORT\n    uuid: $UUID\n    network: tcp\n    tls: true\n    udp: true\n    flow: xtls-rprx-vision\n    servername: $SNI\n    reality-opts:\n      public-key: $PUB_KEY\n      short-id: $SID\n    client-fingerprint: chrome"
             fi
             
-            # 2. VMess-WS (自动适配 Argo)
             if [[ "$TAG" == "vmess-ws" ]]; then
                 UUID=$(_jq '.settings.clients[0].id')
                 PATH_VAL=$(_jq '.streamSettings.wsSettings.path')
-                
                 if [ -n "$ARGO_URL" ]; then
-                    # Argo 链接
                     vm_json="{\"v\":\"2\",\"ps\":\"Clean-VMess-Argo\",\"add\":\"$ARGO_URL\",\"port\":\"443\",\"id\":\"$UUID\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"$ARGO_URL\",\"path\":\"$PATH_VAL\",\"tls\":\"tls\",\"sni\":\"$ARGO_URL\"}"
                     echo "🌀 [VMess-Argo] vmess://$(echo -n "$vm_json" | base64 -w 0)"
-                    
                     VMESS_OC="  - name: Clean-VMess-Argo\n    type: vmess\n    server: $ARGO_URL\n    port: 443\n    uuid: $UUID\n    alterId: 0\n    cipher: auto\n    udp: true\n    tls: true\n    skip-cert-verify: false\n    network: ws\n    ws-opts:\n      path: $PATH_VAL\n      headers:\n        Host: $ARGO_URL"
                 else
-                    # 普通链接
                     vm_json="{\"v\":\"2\",\"ps\":\"Clean-VMess\",\"add\":\"$raw_ip\",\"port\":\"$PORT\",\"id\":\"$UUID\",\"aid\":\"0\",\"scy\":\"auto\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"www.bing.com\",\"path\":\"$PATH_VAL\",\"tls\":\"\"}"
                     echo "🌀 [VMess] vmess://$(echo -n "$vm_json" | base64 -w 0)"
-                    
                     VMESS_OC="  - name: Clean-VMess\n    type: vmess\n    server: $raw_ip\n    port: $PORT\n    uuid: $UUID\n    alterId: 0\n    cipher: auto\n    udp: true\n    tls: false\n    network: ws\n    ws-opts:\n      path: $PATH_VAL\n      headers:\n        Host: www.bing.com"
                 fi
             fi
         done
     fi
 
-    # --- 解析 Sing-box 配置 (基于 config.json) ---
     if [ -f "$CONF_DIR/sb.json" ]; then
         for row in $(jq -r '.inbounds[] | @base64' "$CONF_DIR/sb.json"); do
             _jq() { echo ${row} | base64 --decode | jq -r ${1}; }
             TYPE=$(_jq '.type')
-            
-            # 3. Hysteria2
             if [[ "$TYPE" == "hysteria2" ]]; then
-                PORT=$(_jq '.listen_port')
-                PASS=$(_jq '.users[0].password')
+                PORT=$(_jq '.listen_port'); PASS=$(_jq '.users[0].password')
                 echo "🚀 [Hysteria2] hysteria2://$PASS@$raw_ip:$PORT?security=tls&alpn=h3&insecure=1&sni=www.bing.com#Clean-Hy2"
-                
                 HY2_OC="  - name: Clean-Hy2\n    type: hysteria2\n    server: $raw_ip\n    port: $PORT\n    password: $PASS\n    sni: www.bing.com\n    skip-cert-verify: true\n    alpn:\n      - h3"
             fi
         done
@@ -523,12 +506,14 @@ case "$1" in
         rm -rf "$CONF_DIR"/*.json "$CONF_DIR"/port*
         configure_argo_if_needed
         configure_warp_if_needed
+        download_core  # 核心修复：REP模式也检查下载
         generate_config
-        restart_services
+        setup_services
+        setup_shortcut # 核心修复：REP模式也安装快捷指令
         cmd_list
         ;;
     *)
-        echo ">>> 开始安装 Argosbx 净化版 v3.5..."
+        echo ">>> 开始安装 Argosbx 净化版 v3.6..."
         configure_argo_if_needed
         configure_warp_if_needed
         download_core
