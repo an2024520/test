@@ -1,9 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box Native WARP 管理模块 (SB-Commander v4.1 Fix)
+#  Sing-box Native WARP 管理模块 (SB-Commander v4.2)
+#  - 修复: 适配 Sing-box 1.11+ 新版 WireGuard 格式 (Endpoint)
 #  - 修复: 手动输入 Reserved 格式容错
-#  - 修复: 配置文件写入前的安全检查 (防止配置写坏)
+#  - 安全: 写入前语法校验，防炸配置
 # ============================================================
 
 RED='\033[0;31m'
@@ -43,7 +44,7 @@ ensure_python() {
 
 restart_sb() {
     echo -e "${YELLOW}重启 Sing-box 服务...${PLAIN}"
-    # 检查配置语法
+    # 检查配置语法 (关键)
     if command -v sing-box &> /dev/null; then
         if ! sing-box check -c "$CONFIG_FILE" > /dev/null 2>&1; then
              echo -e "${RED}配置语法校验失败！请检查以下错误：${PLAIN}"
@@ -77,18 +78,10 @@ restart_sb() {
 # ==========================================
 
 # 强力清洗 Reserved 格式
-# 输入: [0, 0, 0] 或 0,0,0 或 12, 34, 56
-# 输出: [0,0,0]
 clean_reserved() {
     local input="$1"
-    # 提取所有数字，用逗号连接
     local nums=$(echo "$input" | grep -oE '[0-9]+' | tr '\n' ',' | sed 's/,$//')
-    if [[ -n "$nums" ]]; then
-        # 检查是否正好是3个数 (简单的校验，非强制)
-        echo "[$nums]"
-    else
-        echo ""
-    fi
+    if [[ -n "$nums" ]]; then echo "[$nums]"; else echo ""; fi
 }
 
 base64_to_reserved_shell() {
@@ -98,7 +91,7 @@ base64_to_reserved_shell() {
     [[ -n "$bytes" ]] && echo "[$bytes]" || echo ""
 }
 
-# 注册 (省略部分非关键代码，保持原样)
+# 注册 (保持原样，关键是写入部分)
 register_warp() {
     ensure_python || return 1
     echo -e "${YELLOW}正在注册免费账号...${PLAIN}"
@@ -123,7 +116,7 @@ register_warp() {
     write_warp_config "$priv_key" "$peer_pub" "$v4" "$v6" "$reserved_json"
 }
 
-# 手动录入 (已增强)
+# 手动录入
 manual_warp() {
     echo -e "${GREEN}手动录入 WARP 信息${PLAIN}"
     read -p "私钥 (Private Key): " priv_key
@@ -139,40 +132,30 @@ manual_warp() {
     read -p "请输入: " res_input
     
     local reserved_json=""
-    
-    # 1. 尝试作为数字数组清洗 (匹配你的懒人输入法)
     if [[ "$res_input" =~ [0-9] ]]; then
-        # 只要包含数字，尝试提取并转为 [x,x,x]
         local clean_res=$(clean_reserved "$res_input")
-        if [[ -n "$clean_res" ]]; then
-            reserved_json="$clean_res"
-            echo -e "识别为数组格式: ${SKYBLUE}$reserved_json${PLAIN}"
-        fi
+        [[ -n "$clean_res" ]] && reserved_json="$clean_res"
     fi
     
-    # 2. 如果不是数组，尝试 Base64 解码
     if [[ -z "$reserved_json" ]]; then
         reserved_json=$(base64_to_reserved_shell "$res_input")
         if [[ -z "$reserved_json" ]]; then
-             # 3. 最后尝试 Python 解码
              ensure_python
              reserved_json=$(python3 -c "import base64, json; decoded = base64.b64decode('$res_input'); print(json.dumps([x for x in decoded]))" 2>/dev/null)
         fi
-        if [[ -n "$reserved_json" ]]; then
-             echo -e "识别为 Base64 格式: ${SKYBLUE}$reserved_json${PLAIN}"
-        fi
     fi
 
-    # 4. 兜底
     if [[ -z "$reserved_json" || "$reserved_json" == "[]" ]]; then
-        echo -e "${RED}Reserved 格式无法识别，将使用默认值 [0,0,0]${PLAIN}"
+        echo -e "${RED}Reserved 格式无法识别，使用默认值 [0,0,0]${PLAIN}"
         reserved_json="[0,0,0]"
+    else
+        echo -e "识别为: ${SKYBLUE}$reserved_json${PLAIN}"
     fi
     
     write_warp_config "$priv_key" "$peer_pub" "$v4" "$v6" "$reserved_json"
 }
 
-# 写入配置 (安全版)
+# 写入配置 (修复点：使用 endpoint 而非 server/server_port)
 write_warp_config() {
     local priv="$1"
     local pub="$2"
@@ -180,34 +163,40 @@ write_warp_config() {
     local v6="$4"
     local res="$5"
     
-    # 构建 IP 数组
     local addr_json="[]"
     if [[ -n "$v4" && "$v4" != "null" ]]; then addr_json=$(echo "$addr_json" | jq --arg ip "$v4" '. + [$ip]'); fi
     if [[ -n "$v6" && "$v6" != "null" ]]; then addr_json=$(echo "$addr_json" | jq --arg ip "$v6" '. + [$ip]'); fi
     
-    # 生成 WARP JSON
+    # 重点修复：使用 endpoint 字段
     local warp_json=$(jq -n \
-        --arg priv "$priv" --arg pub "$pub" --argjson addr "$addr_json" --argjson res "$res" \
-        '{ "type": "wireguard", "tag": "WARP", "server": "engage.cloudflareclient.com", "server_port": 2408, "local_address": $addr, "private_key": $priv, "peers": [{ "server": "engage.cloudflareclient.com", "server_port": 2408, "public_key": $pub, "reserved": $res }] }')
+        --arg priv "$priv" \
+        --arg pub "$pub" \
+        --argjson addr "$addr_json" \
+        --argjson res "$res" \
+        '{ 
+            "type": "wireguard", 
+            "tag": "WARP", 
+            "local_address": $addr, 
+            "private_key": $priv, 
+            "peers": [
+                { 
+                    "endpoint": "engage.cloudflareclient.com:2408", 
+                    "public_key": $pub, 
+                    "reserved": $res 
+                }
+            ] 
+        }')
     
-    # 检查 JSON 生成是否成功
     if [[ $? -ne 0 || -z "$warp_json" ]]; then
-        echo -e "${RED}错误: JSON 生成失败，请检查输入参数是否包含非法字符。${PLAIN}"
+        echo -e "${RED}错误: JSON 生成失败。${PLAIN}"
         return
     fi
 
     echo -e "${YELLOW}正在验证并写入配置...${PLAIN}"
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
-    
-    # 使用临时文件操作，防止管道中断清空文件
     local TMP_CONF=$(mktemp)
     
-    # 1. 删除旧 WARP
     jq 'del(.outbounds[] | select(.tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF"
-    if [[ $? -ne 0 ]]; then echo -e "${RED}配置读取失败，终止操作。${PLAIN}"; rm "$TMP_CONF"; return; fi
-    
-    # 2. 添加新 WARP
-    # 使用 --slurpfile 或者直接 argjson，这里继续用 argjson
     jq --argjson new "$warp_json" '.outbounds += [$new]' "$TMP_CONF" > "${TMP_CONF}.2"
     
     if [[ $? -eq 0 && -s "${TMP_CONF}.2" ]]; then
@@ -229,10 +218,7 @@ apply_routing_rule() {
     local rule_json="$1"
     echo -e "${YELLOW}正在应用路由规则...${PLAIN}"
     local TMP_CONF=$(mktemp)
-    
-    # 插入规则到最前
     jq --argjson r "$rule_json" '.route.rules = [$r] + .route.rules' "$CONFIG_FILE" > "$TMP_CONF"
-    
     if [[ $? -eq 0 && -s "$TMP_CONF" ]]; then
         mv "$TMP_CONF" "$CONFIG_FILE"
         restart_sb
@@ -289,7 +275,6 @@ mode_specific_node() {
             echo -e "已选择: ${GREEN}$tag${PLAIN}"
         fi
     done
-
     local rule=$(jq -n --argjson ib "$selected_tags_json" '{ "inbound": $ib, "outbound": "WARP" }')
     apply_routing_rule "$rule"
 }
@@ -298,10 +283,8 @@ uninstall_warp() {
     echo -e "${YELLOW}正在卸载 WARP...${PLAIN}"
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak_uninstall"
     local TMP_CONF=$(mktemp)
-    
     jq 'del(.outbounds[] | select(.tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq 'del(.route.rules[] | select(.outbound == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
-    
     restart_sb
 }
 
