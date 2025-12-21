@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  全能协议管理中心 (Commander v3.5)
+#  全能协议管理中心 (Commander v3.6)
 #  - 架构: Core / Nodes / Routing / Tools
 #  - 特性: 动态链接 / 环境自洁 / 模块化路由
 # ============================================================
@@ -44,7 +44,7 @@ FILE_ATTACH="xray_module_attach_warp.sh"  # 旧挂载
 FILE_DETACH="xray_module_detach_warp.sh"  # 旧卸载
 FILE_BOOST="xray_module_boost.sh"
 
-# --- 引擎函数 (保持不变) ---
+# --- 引擎函数 (已优化 UX) ---
 
 check_dir_clean() {
     local current_script=$(basename "$0")
@@ -78,8 +78,12 @@ get_url_by_name() {
     grep "^$fname" "$LOCAL_LIST_FILE" | awk '{print $2}' | head -n 1
 }
 
+# 核心执行函数 (修复：支持跳过结束暂停)
 check_run() {
     local script_name="$1"
+    local no_pause="$2"  # 新增参数：如果为 "true"，则不显示操作结束的暂停
+
+    # 1. 下载检查
     if [[ ! -f "$script_name" ]]; then
         echo -e "${YELLOW}正在获取组件 [$script_name] ...${PLAIN}"
         local script_url=$(get_url_by_name "$script_name")
@@ -89,8 +93,14 @@ check_run() {
         chmod +x "$script_name"
         echo -e "${GREEN}获取成功。${PLAIN}"
     fi
+
+    # 2. 执行脚本
     ./"$script_name"
-    echo -e ""; read -p "操作结束，按回车键继续..."
+
+    # 3. 智能暂停 (仅在需要时暂停)
+    if [[ "$no_pause" != "true" ]]; then
+        echo -e ""; read -p "操作结束，按回车键继续..."
+    fi
 }
 
 # ==========================================
@@ -181,7 +191,10 @@ menu_routing() {
         echo -e ""
         read -p "请选择: " choice
         case "$choice" in
-            1) check_run "$FILE_NATIVE_WARP" ;; # 直接调用新模块
+            1) 
+                # 修复: 传入 "true" 参数，Native WARP 菜单退出后不再显示"操作结束"
+                check_run "$FILE_NATIVE_WARP" "true" 
+                ;; 
             2) 
                 while true; do
                     clear
@@ -223,9 +236,9 @@ init_urls
 while true; do
     clear
     echo -e "${GREEN}============================================${PLAIN}"
-    echo -e "${GREEN}      全能协议管理中心 (Commander v3.5)      ${PLAIN}"
+    echo -e "${GREEN}      全能协议管理中心 (Commander v3.6)      ${PLAIN}"
     echo -e "${GREEN}============================================${PLAIN}"
-    # 简单的状态检查 (可选)
+    # 简单的状态检查
     if pgrep -x "xray" >/dev/null; then STATUS="${GREEN}运行中${PLAIN}"; else STATUS="${RED}未运行${PLAIN}"; fi
     echo -e " 系统状态: [Xray: $STATUS]"
     echo -e "--------------------------------------------"
