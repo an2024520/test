@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # ============================================================
-#  全能协议管理中心 (Commander v3.6)
+#  全能协议管理中心 (Commander v3.7.1)
 #  - 架构: Core / Nodes / Routing / Tools
-#  - 特性: 动态链接 / 环境自洁 / 模块化路由
+#  - 特性: 动态链接 / 环境自洁 / 模块化路由 / Sing-box 支持
 # ============================================================
 
 # 颜色定义
@@ -23,9 +23,15 @@ URL_LIST_FILE="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/
 LOCAL_LIST_FILE="/tmp/sh_url.txt"
 
 # [文件映射: 本地文件名 <-> sh_url.txt 中的 Key]
-# 核心类
+# Xray 核心类
 FILE_XRAY_CORE="xray_core.sh"
 FILE_XRAY_UNINSTALL="xray_uninstall_all.sh"
+
+# Sing-box 核心类 (修正文件名以匹配 sh_url.txt)
+FILE_SB_CORE="sb_install_core.sh"
+FILE_SB_UNINSTALL="sb_uninstall.sh"
+
+# 基础设施类
 FILE_WIREPROXY="warp_wireproxy_socks5.sh"
 FILE_CF_TUNNEL="install_cf_tunnel_debian.sh"
 
@@ -39,12 +45,12 @@ FILE_NODE_DEL="xray_module_node_del.sh"
 FILE_HY2="hy2.sh"
 
 # 路由与工具类
-FILE_NATIVE_WARP="xray_module_warp_native_route.sh"         # ★ 新模块
+FILE_NATIVE_WARP="xray_module_warp_native_route.sh"
 FILE_ATTACH="xray_module_attach_warp.sh"  # 旧挂载
 FILE_DETACH="xray_module_detach_warp.sh"  # 旧卸载
 FILE_BOOST="xray_module_boost.sh"
 
-# --- 引擎函数 (已优化 UX) ---
+# --- 引擎函数 ---
 
 check_dir_clean() {
     local current_script=$(basename "$0")
@@ -78,16 +84,20 @@ get_url_by_name() {
     grep "^$fname" "$LOCAL_LIST_FILE" | awk '{print $2}' | head -n 1
 }
 
-# 核心执行函数 (修复：支持跳过结束暂停)
+# 核心执行函数 (支持自动建目录 + 静默模式)
 check_run() {
     local script_name="$1"
-    local no_pause="$2"  # 新增参数：如果为 "true"，则不显示操作结束的暂停
+    local no_pause="$2"
 
     # 1. 下载检查
     if [[ ! -f "$script_name" ]]; then
         echo -e "${YELLOW}正在获取组件 [$script_name] ...${PLAIN}"
         local script_url=$(get_url_by_name "$script_name")
         if [[ -z "$script_url" ]]; then echo -e "${RED}错误: sh_url.txt 中未找到该文件记录。${PLAIN}"; read -p "按回车继续..."; return; fi
+        
+        # 确保目录结构存在 (防止含路径的文件名报错)
+        mkdir -p "$(dirname "$script_name")"
+        
         wget -qO "$script_name" "$script_url"
         if [[ $? -ne 0 ]]; then echo -e "${RED}下载失败。${PLAIN}"; read -p "按回车继续..."; return; fi
         chmod +x "$script_name"
@@ -97,7 +107,7 @@ check_run() {
     # 2. 执行脚本
     ./"$script_name"
 
-    # 3. 智能暂停 (仅在需要时暂停)
+    # 3. 智能暂停
     if [[ "$no_pause" != "true" ]]; then
         echo -e ""; read -p "操作结束，按回车键继续..."
     fi
@@ -107,6 +117,26 @@ check_run() {
 # 2. 菜单逻辑 (新架构)
 # ==========================================
 
+# --- [子菜单] Sing-box 核心环境管理 ---
+menu_singbox_env() {
+    while true; do
+        clear
+        echo -e "${BLUE}============= Sing-box 核心环境管理 =============${PLAIN}"
+        echo -e " ${SKYBLUE}1.${PLAIN} 安装/重置 Sing-box 核心 (最新正式版)"
+        echo -e " ${SKYBLUE}2.${PLAIN} ${RED}彻底卸载 Sing-box 服务${PLAIN}"
+        echo -e " ----------------------------------------------"
+        echo -e " ${GRAY}0. 返回上一级${PLAIN}"
+        echo -e ""
+        read -p "请选择: " sb_choice
+        case "$sb_choice" in
+            1) check_run "$FILE_SB_CORE" ;;
+            2) check_run "$FILE_SB_UNINSTALL" ;;
+            0) return ;;
+            *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
+        esac
+    done
+}
+
 # --- 1. 前置/核心管理 ---
 menu_core() {
     while true; do
@@ -115,7 +145,7 @@ menu_core() {
         echo -e " ${SKYBLUE}1.${PLAIN} 安装/重置 Xray 核心环境"
         echo -e " ${SKYBLUE}2.${PLAIN} ${RED}彻底卸载 Xray 服务${PLAIN}"
         echo -e " ----------------------------------------------"
-        echo -e " ${SKYBLUE}3.${PLAIN} Sing-box 核心环境 (开发中...)"
+        echo -e " ${SKYBLUE}3.${PLAIN} Sing-box 核心环境管理"
         echo -e " ----------------------------------------------"
         echo -e " ${SKYBLUE}4.${PLAIN} WireProxy (Warp 出口代理服务)"
         echo -e "    ${GRAY}- 仅提供本地 Socks5 端口，需配合路由规则使用${PLAIN}"
@@ -128,7 +158,7 @@ menu_core() {
         case "$choice" in
             1) check_run "$FILE_XRAY_CORE" ;;
             2) check_run "$FILE_XRAY_UNINSTALL" ;;
-            3) echo "敬请期待 Sing-box"; sleep 1 ;;
+            3) menu_singbox_env ;; # 进入 Sing-box 子菜单
             4) check_run "$FILE_WIREPROXY" ;;
             5) check_run "$FILE_CF_TUNNEL" ;;
             0) break ;;
@@ -192,7 +222,6 @@ menu_routing() {
         read -p "请选择: " choice
         case "$choice" in
             1) 
-                # 修复: 传入 "true" 参数，Native WARP 菜单退出后不再显示"操作结束"
                 check_run "$FILE_NATIVE_WARP" "true" 
                 ;; 
             2) 
@@ -212,11 +241,10 @@ menu_routing() {
                 done
                 ;;
             3)
-                # Sing-box 预留提示
                 echo -e ""
                 echo -e "${YELLOW}🚧 施工中...${PLAIN}"
-                echo -e "Sing-box 的路由规则（Rule Set / 混合分流）功能即将上线。"
-                echo -e "敬请期待双核路由系统的完整形态！"
+                echo -e "请先在【前置/核心管理】中安装 Sing-box 核心环境。"
+                echo -e "路由功能代码即将更新！"
                 echo -e ""
                 read -p "按回车键继续..."
                 ;;
@@ -236,11 +264,15 @@ init_urls
 while true; do
     clear
     echo -e "${GREEN}============================================${PLAIN}"
-    echo -e "${GREEN}      全能协议管理中心 (Commander v3.6)      ${PLAIN}"
+    echo -e "${GREEN}      全能协议管理中心 (Commander v3.7.1)     ${PLAIN}"
     echo -e "${GREEN}============================================${PLAIN}"
-    # 简单的状态检查
-    if pgrep -x "xray" >/dev/null; then STATUS="${GREEN}运行中${PLAIN}"; else STATUS="${RED}未运行${PLAIN}"; fi
-    echo -e " 系统状态: [Xray: $STATUS]"
+    
+    # 简单的状态检查 (Xray & Sing-box)
+    STATUS_TEXT=""
+    if pgrep -x "xray" >/dev/null; then STATUS_TEXT+="Xray:${GREEN}运行 ${PLAIN}"; else STATUS_TEXT+="Xray:${RED}停止 ${PLAIN}"; fi
+    if pgrep -x "sing-box" >/dev/null; then STATUS_TEXT+="| SB:${GREEN}运行 ${PLAIN}"; else STATUS_TEXT+="| SB:${RED}停止 ${PLAIN}"; fi
+    
+    echo -e " 系统状态: [$STATUS_TEXT]"
     echo -e "--------------------------------------------"
     echo -e " ${SKYBLUE}1.${PLAIN} 前置/核心管理 (Core & Infrastructure)"
     echo -e " ${SKYBLUE}2.${PLAIN} 节点配置管理 (Nodes)"
