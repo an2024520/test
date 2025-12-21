@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box 节点新增: AnyTLS + Reality + 智能防冲突 (v2.1)
+#  Sing-box 节点新增: AnyTLS + Reality (v2.2 终极版)
 #  - 协议: AnyTLS (Sing-box 专属拟态协议)
-#  - 修复: 自动清理同名节点 / 暴力修复日志权限
+#  - 修复: 强制切换至 Systemd 日志 (彻底解决 Permission denied)
 #  - 兼容: 支持 v2rayN (v7.14+) 分享链接
 # ============================================================
 
@@ -16,7 +16,6 @@ PLAIN='\033[0m'
 # 核心路径
 CONFIG_FILE="/usr/local/etc/sing-box/config.json"
 SB_BIN="/usr/local/bin/sing-box"
-LOG_DIR="/var/log/sing-box"
 
 echo -e "${GREEN}>>> [Sing-box] 智能添加节点: AnyTLS + Reality ...${PLAIN}"
 
@@ -31,16 +30,17 @@ if ! command -v jq &> /dev/null || ! command -v openssl &> /dev/null; then
     apt update -y && apt install -y jq openssl
 fi
 
-# 2. 初始化配置文件骨架
+# 2. 初始化配置文件 (若不存在)
 if [[ ! -f "$CONFIG_FILE" ]]; then
     echo -e "${YELLOW}配置文件不存在，正在初始化标准骨架...${PLAIN}"
     mkdir -p /usr/local/etc/sing-box
+    # 注意: output 为空字符串代表输出到 Console/Systemd，timestamp 设为 false (Systemd 自带时间戳)
     cat <<EOF > $CONFIG_FILE
 {
   "log": {
     "level": "info",
-    "output": "${LOG_DIR}/access.log",
-    "timestamp": true
+    "output": "",
+    "timestamp": false
   },
   "inbounds": [],
   "outbounds": [
@@ -70,7 +70,6 @@ while true; do
     [[ -z "$CUSTOM_PORT" ]] && PORT=8443 && break
     
     if [[ "$CUSTOM_PORT" =~ ^[0-9]+$ ]] && [ "$CUSTOM_PORT" -le 65535 ]; then
-        # 智能检测：如果端口已存在，提示将覆盖
         if grep -q "\"listen_port\": $CUSTOM_PORT" "$CONFIG_FILE"; then
              echo -e "${YELLOW}提示: 端口 $CUSTOM_PORT 已存在，脚本将自动覆盖旧配置。${PLAIN}"
         fi
@@ -128,8 +127,12 @@ echo -e "${YELLOW}正在更新配置文件...${PLAIN}"
 
 NODE_TAG="anytls-${PORT}"
 
-# === 关键步骤：清理旧的同名 tag ===
-# 防止 duplicate inbound tag 错误
+# === 关键步骤 1: 强制将 Log 改为 Console 输出 (解决 Permission Denied) ===
+# 无论之前配置如何，这里强制覆盖 log 字段
+tmp_log=$(mktemp)
+jq '.log.output = "" | .log.timestamp = false' "$CONFIG_FILE" > "$tmp_log" && mv "$tmp_log" "$CONFIG_FILE"
+
+# === 关键步骤 2: 清理旧的同名 tag ===
 tmp0=$(mktemp)
 jq --arg tag "$NODE_TAG" 'del(.inbounds[] | select(.tag == $tag))' "$CONFIG_FILE" > "$tmp0" && mv "$tmp0" "$CONFIG_FILE"
 
@@ -171,17 +174,8 @@ NODE_JSON=$(jq -n \
 tmp=$(mktemp)
 jq --argjson new_node "$NODE_JSON" '.inbounds += [$new_node]' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
 
-# 6. 修复日志权限 (解决 Permission denied)
-# ----------------------------------------------------
-echo -e "${YELLOW}正在修复权限并重启服务...${PLAIN}"
-mkdir -p "$LOG_DIR"
-touch "${LOG_DIR}/access.log"
-touch "${LOG_DIR}/error.log"
-
-# 无论 Systemd 用什么用户运行，直接赋予 777 权限确保可写
-chmod -R 777 "$LOG_DIR"
-
-# 7. 重启与输出
+# 6. 重启与输出
+echo -e "${YELLOW}正在重启服务 (日志将输出至 Systemd)...${PLAIN}"
 systemctl restart sing-box
 sleep 2
 
@@ -198,7 +192,7 @@ if systemctl is-active --quiet sing-box; then
     echo -e "端口        : ${YELLOW}${PORT}${PLAIN}"
     echo -e "SNI (伪装)  : ${YELLOW}${SNI}${PLAIN}"
     echo -e "协议        : AnyTLS + Reality"
-    echo -e "状态        : ${GREEN}运行中${PLAIN}"
+    echo -e "日志模式    : ${SKYBLUE}Systemd Journal (无文件)${PLAIN}"
     echo -e "----------------------------------------"
     echo -e "🚀 [v2rayN 分享链接] (v7.14+):"
     echo -e "${YELLOW}${SHARE_LINK}${PLAIN}"
