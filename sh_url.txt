@@ -22,3 +22,4 @@ sb_vless_ws_tls.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/m
 sb_vless_ws_tunnel.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/singbox/sb_vless_ws_tunnel.sh
 sb_get_node_details.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/singbox/sb_get_node_details.sh
 sb_module_node_del.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/singbox/sb_module_node_del.sh
+sb_hy2_self.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/singbox/sb_hy2_self.sh
