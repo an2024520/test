@@ -59,6 +59,7 @@ FILE_HY2="hy2.sh"
 
 # --- 路由与工具类 ---
 FILE_NATIVE_WARP="xray_module_warp_native_route.sh"
+FILE_SB_NATIVE_WARP="sb_module_warp_native_route.sh" # [新增] Sing-box Native WARP
 FILE_ATTACH="xray_module_attach_warp.sh"  # 旧挂载
 FILE_DETACH="xray_module_detach_warp.sh"  # 旧卸载
 FILE_BOOST="xray_module_boost.sh"
@@ -237,6 +238,33 @@ menu_nodes_sb() {
     done
 }
 
+# --- [新增] Sing-box 路由管理子菜单 ---
+menu_routing_sb() {
+    while true; do
+        clear
+        echo -e "${BLUE}============= Sing-box 核心路由管理 =============${PLAIN}"
+        echo -e " ${GREEN}1.${PLAIN} Native WARP (原生 WireGuard 模式 - 推荐)"
+        echo -e "    ${GRAY}- 自动注册账号，支持 ChatGPT/Netflix 分流${PLAIN}"
+        echo -e " ${GREEN}2.${PLAIN} Wireproxy WARP (Socks5 模式 - 待开发)"
+        echo -e " ----------------------------------------------"
+        echo -e " ${GRAY}0. 返回上一级${PLAIN}"
+        echo -e ""
+        read -p "请选择: " choice_sb_route
+        case $choice_sb_route in
+            1) 
+                # 调用 Native WARP 管理脚本
+                check_run "$FILE_SB_NATIVE_WARP" "true" 
+                ;;
+            2)
+                echo -e "${RED}功能开发中...${PLAIN}"
+                sleep 2
+                ;;
+            0) return ;;
+            *) echo -e "${RED}无效选择${PLAIN}"; sleep 1 ;;
+        esac
+    done
+}
+
 # --- 1. 前置/核心管理 ---
 menu_core() {
     while true; do
@@ -303,7 +331,7 @@ menu_routing() {
         echo -e "    ${GRAY}- 需先在核心管理中安装 WireProxy 服务${PLAIN}"
         echo -e " ----------------------------------------------"
         echo -e " [Sing-box 核心路由]"
-        echo -e " ${GRAY}3. Sing-box 路由管理 (开发中...)${PLAIN}"
+        echo -e " ${GREEN}3. Sing-box 路由管理 (WARP & 分流)${PLAIN}"
         echo -e " ----------------------------------------------"
         echo -e " ${GRAY}0. 返回上一级${PLAIN}"
         echo -e ""
@@ -327,12 +355,8 @@ menu_routing() {
                 done
                 ;;
             3)
-                echo -e ""
-                echo -e "${YELLOW}🚧 施工中...${PLAIN}"
-                echo -e "请先在【前置/核心管理】中安装 Sing-box 核心环境。"
-                echo -e "路由功能代码即将更新！"
-                echo -e ""
-                read -p "按回车键继续..."
+                # 调用新的 Sing-box 路由管理
+                menu_routing_sb
                 ;;
             0) break ;;
             *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
