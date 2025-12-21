@@ -174,6 +174,9 @@ menu_routing() {
         echo -e " ${YELLOW}2. Wireproxy WARP (传统挂载模式)${PLAIN}"
         echo -e "    ${GRAY}- 需先在核心管理中安装 WireProxy 服务${PLAIN}"
         echo -e " ----------------------------------------------"
+        echo -e " [Sing-box 核心路由]"
+        echo -e " ${GRAY}3. Sing-box 路由管理 (开发中...)${PLAIN}"
+        echo -e " ----------------------------------------------"
         echo -e " ${GRAY}0. 返回上一级${PLAIN}"
         echo -e ""
         read -p "请选择: " choice
@@ -194,6 +197,15 @@ menu_routing() {
                         0) break ;;
                     esac
                 done
+                ;;
+            3)
+                # Sing-box 预留提示
+                echo -e ""
+                echo -e "${YELLOW}🚧 施工中...${PLAIN}"
+                echo -e "Sing-box 的路由规则（Rule Set / 混合分流）功能即将上线。"
+                echo -e "敬请期待双核路由系统的完整形态！"
+                echo -e ""
+                read -p "按回车键继续..."
                 ;;
             0) break ;;
             *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
