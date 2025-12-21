@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box 节点新增: Hysteria 2 + ACME (通用版 v3.2)
+#  Sing-box 节点新增: Hysteria 2 + ACME (通用版 v3.3)
+#  - 修复: 更改密码生成逻辑为 Hex，解决客户端链接解析兼容性问题
 #  - 模式 1: 手动指定证书路径 (适合已有证书)
 #  - 模式 2: 自动申请证书 (集成 acme.sh，需 80 端口)
 #  - 核心: 写入 Inbounds + 写入 .meta + 端口霸占清理
-#  - 更新: 新增 OpenClash 格式输出
 # ============================================================
 
 # 颜色定义
@@ -180,10 +180,10 @@ while true; do
     fi
 done
 
-# B. 密码与混淆
-PASSWORD=$(openssl rand -base64 16)
+# B. 密码与混淆 (修复点: 使用 Hex 生成 URL 安全密码)
+PASSWORD=$(openssl rand -hex 16)
 OBFS_PASS=$(openssl rand -hex 8)
-echo -e "${YELLOW}已自动生成高强度密码与混淆密钥。${PLAIN}"
+echo -e "${YELLOW}已自动生成高强度密码与混淆密钥 (Hex模式/无特殊字符)。${PLAIN}"
 
 # 6. 构建与注入节点
 echo -e "${YELLOW}正在更新配置文件...${PLAIN}"
