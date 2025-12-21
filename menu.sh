@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # ============================================================
-#  全能协议管理中心 (Commander v3.9)
+#  全能协议管理中心 (Commander v3.9.1)
 #  - 架构: Core / Nodes / Routing / Tools
-#  - 特性: 动态链接 / 环境自洁 / 模块化路由 / 双核节点管理
+#  - 特性: 动态链接 / 环境自洁 / 模块化路由 / 双核节点管理 / 强刷缓存
 # ============================================================
 
-# 颜色定义。
+# 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -81,7 +81,8 @@ check_dir_clean() {
 
 init_urls() {
     echo -e "${YELLOW}正在同步最新脚本列表...${PLAIN}"
-    wget -T 5 -qO "$LOCAL_LIST_FILE" "$URL_LIST_FILE"
+    # 【更新】加入时间戳 ?t=$(date +%s) 强制刷新 GitHub 缓存
+    wget -T 5 -qO "$LOCAL_LIST_FILE" "${URL_LIST_FILE}?t=$(date +%s)"
     if [[ $? -ne 0 ]]; then
         if [[ -f "$LOCAL_LIST_FILE" ]]; then echo -e "${YELLOW}网络异常，使用本地缓存列表。${PLAIN}"; else echo -e "${RED}致命错误: 无法获取脚本列表。${PLAIN}"; exit 1; fi
     else
@@ -108,7 +109,8 @@ check_run() {
         # 确保目录结构存在
         mkdir -p "$(dirname "$script_name")"
         
-        wget -qO "$script_name" "$script_url"
+        # 【更新】加入时间戳 ?t=$(date +%s) 强制刷新 GitHub 缓存
+        wget -qO "$script_name" "${script_url}?t=$(date +%s)"
         if [[ $? -ne 0 ]]; then echo -e "${RED}下载失败。${PLAIN}"; read -p "按回车继续..."; return; fi
         chmod +x "$script_name"
         echo -e "${GREEN}获取成功。${PLAIN}"
@@ -205,7 +207,7 @@ menu_nodes_sb() {
                         read -p "按回车继续..."; continue 
                     fi
                     mkdir -p "$(dirname "$FILE_SB_INFO")"
-                    wget -qO "$FILE_SB_INFO" "$script_url"
+                    wget -qO "$FILE_SB_INFO" "${script_url}?t=$(date +%s)" # 这里也加了时间戳
                     if [[ $? -ne 0 ]]; then 
                          echo -e "${RED}下载失败。${PLAIN}"; 
                          read -p "按回车继续..."; continue 
@@ -387,7 +389,7 @@ init_urls
 while true; do
     clear
     echo -e "${GREEN}============================================${PLAIN}"
-    echo -e "${GREEN}      全能协议管理中心 (Commander v3.9)      ${PLAIN}"
+    echo -e "${GREEN}      全能协议管理中心 (Commander v3.9.1)      ${PLAIN}"
     echo -e "${GREEN}============================================${PLAIN}"
     
     # 简单的状态检查 (Xray & Sing-box)
