@@ -1,10 +1,11 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box 节点新增: Hysteria 2 + ACME (通用版 v3.1)
+#  Sing-box 节点新增: Hysteria 2 + ACME (通用版 v3.2)
 #  - 模式 1: 手动指定证书路径 (适合已有证书)
 #  - 模式 2: 自动申请证书 (集成 acme.sh，需 80 端口)
 #  - 核心: 写入 Inbounds + 写入 .meta + 端口霸占清理
+#  - 更新: 新增 OpenClash 格式输出
 # ============================================================
 
 # 颜色定义
@@ -264,6 +265,20 @@ if systemctl is-active --quiet sing-box; then
     echo -e "🚀 [v2rayN 分享链接]:"
     echo -e "${YELLOW}${SHARE_LINK}${PLAIN}"
     echo -e "----------------------------------------"
+    echo -e "🐱 [OpenClash / Clash Meta 配置块]:"
+    echo -e "${YELLOW}"
+    cat <<EOF
+- name: "${NODE_NAME}"
+  type: hysteria2
+  server: "${SHARE_HOST}"
+  port: ${PORT}
+  password: "${PASSWORD}"
+  sni: "${DOMAIN}"
+  skip-cert-verify: false
+  obfs: salamander
+  obfs-password: "${OBFS_PASS}"
+EOF
+    echo -e "${PLAIN}----------------------------------------"
     echo -e "📱 [Sing-box 客户端配置块]:"
     echo -e "${YELLOW}"
     cat <<EOF
