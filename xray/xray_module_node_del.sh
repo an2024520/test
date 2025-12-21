@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # ============================================================
-#  模块四 (v4.2 兼容版)：批量智能拆除工具
+#  模块四 (v4.3 修复版)：批量智能拆除工具
+#  - 修复了误删 Native WARP 多节点共用规则的问题
 # ============================================================
 
 # 颜色定义
@@ -15,7 +16,7 @@ PLAIN='\033[0m'
 CONFIG_FILE="/usr/local/etc/xray/config.json"
 BACKUP_FILE="/usr/local/etc/xray/config.json.bak"
 
-echo -e "${RED}>>> [模块四] 智能节点拆除工具 (v4.2 兼容版)...${PLAIN}"
+echo -e "${RED}>>> [模块四] 智能节点拆除工具 (v4.3 修复版)...${PLAIN}"
 
 # 1. 检查配置文件
 if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -122,10 +123,20 @@ for TARGET_PORT in "${TARGET_PORTS_ARRAY[@]}"; do
     jq --argjson p "$TARGET_PORT" '.inbounds |= map(select(.port != $p))' "$CONFIG_FILE" > "$tmp1" && mv "$tmp1" "$CONFIG_FILE"
     echo -e "  -> 节点配置已移除。"
 
-    # 4.4 删除相关的 routing 规则
+    # 4.4 删除相关的 routing 规则 (逻辑已修复)
+    # -------------------------------------------------------------
+    # 原逻辑：只要 inboundTag 含此 Tag 就删整条规则 (会导致误删共享规则)
+    # 新逻辑：只从 inboundTag 数组中剔除此 Tag；若数组变空，才删整条规则
+    # -------------------------------------------------------------
     tmp2=$(mktemp)
-    jq --arg tag "$TARGET_TAG" '.routing.rules |= map(select(.inboundTag | index($tag) | not))' "$CONFIG_FILE" > "$tmp2" && mv "$tmp2" "$CONFIG_FILE"
-    echo -e "  -> 关联路由规则已清理。"
+    jq --arg tag "$TARGET_TAG" '
+      .routing.rules |= map(
+        (if .inboundTag then .inboundTag -= [$tag] else . end) 
+        | select(.inboundTag == null or (.inboundTag | length > 0))
+      )
+    ' "$CONFIG_FILE" > "$tmp2" && mv "$tmp2" "$CONFIG_FILE"
+    
+    echo -e "  -> 关联路由规则已智能更新。"
     
     ((CHANGE_COUNT++))
 done
