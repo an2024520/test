@@ -1,9 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box Native WARP 管理模块 (SB-Commander v3.9.1)
+#  Sing-box Native WARP 管理模块 (SB-Commander v4.0)
 #  - 核心: WireGuard 原生出站 / 动态路由管理
 #  - 特性: 智能路径 / 延迟加载Python / 纯Shell解码 / 纯净分流
+#  - 更新: 支持“指定节点接管” (模式三)
 # ============================================================
 
 RED='\033[0;31m'
@@ -11,6 +12,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 SKYBLUE='\033[0;36m'
 PLAIN='\033[0m'
+GRAY='\033[0;37m'
 
 # ==========================================
 # 1. 环境初始化与依赖检查
@@ -33,13 +35,12 @@ if [[ -z "$CONFIG_FILE" ]]; then
     exit 1
 fi
 
-# 检查基础依赖 (去除了 python3 的全局检查)
+# 检查基础依赖
 check_dependencies() {
     local missing=0
     if ! command -v jq &> /dev/null; then echo -e "${RED}缺失工具: jq${PLAIN}"; missing=1; fi
     if ! command -v curl &> /dev/null; then echo -e "${RED}缺失工具: curl${PLAIN}"; missing=1; fi
-    # 增加对 od 的检查 (用于手动模式下的 Base64 解码，通常系统自带)
-    if ! command -v od &> /dev/null; then echo -e "${YELLOW}提示: 缺失 od 工具 (用于免 Python 解码)${PLAIN}"; fi
+    if ! command -v od &> /dev/null; then echo -e "${GRAY}提示: 建议安装 od 工具 (用于免 Python 解码)${PLAIN}"; fi
     
     if [[ $missing -eq 1 ]]; then
         echo -e "${YELLOW}正在安装基础依赖...${PLAIN}"
@@ -51,18 +52,15 @@ check_dependencies() {
     fi
 }
 
-# 专门用于自动注册时的 Python 检查函数 (按需调用)
+# 按需安装 Python
 ensure_python() {
     if ! command -v python3 &> /dev/null; then
-        echo -e "${YELLOW}自动注册算法需要 Python3 支持，正在安装...${PLAIN}"
-        if [ -x "$(command -v apt)" ]; then
-            apt update && apt install -y python3
-        elif [ -x "$(command -v yum)" ]; then
-            yum install -y python3
-        fi
+        echo -e "${YELLOW}该功能需要 Python3 支持，正在安装...${PLAIN}"
+        if [ -x "$(command -v apt)" ]; then apt update && apt install -y python3; fi
+        if [ -x "$(command -v yum)" ]; then yum install -y python3; fi
         
         if ! command -v python3 &> /dev/null; then
-            echo -e "${RED}Python3 安装失败，无法进行自动注册计算。${PLAIN}"
+            echo -e "${RED}Python3 安装失败，无法继续。${PLAIN}"
             return 1
         fi
     fi
@@ -89,43 +87,26 @@ restart_sb() {
 }
 
 # ==========================================
-# 2. 核心功能：WARP 账号获取与计算
+# 2. 核心功能：WARP 账号逻辑
 # ==========================================
 
-# 纯 Shell 实现 Base64 转 Sing-box Reserved 数组
-# 输入: Base64 字符串 (例如 c+kIBA==)
-# 输出: [115,233,8]
+# Shell Base64 解码
 base64_to_reserved_shell() {
     local input="$1"
-    # 使用 base64 解码 -> od 转十进制 -> tr 格式化 -> sed 构建数组
-    local decoded_nums=$(echo "$input" | base64 -d 2>/dev/null | od -An -t u1 | tr -s ' ' ',')
-    # 清理前后逗号和空格
-    decoded_nums=$(echo "$decoded_nums" | sed 's/^,//;s/,$//;s/ //g')
-    
-    if [[ -z "$decoded_nums" ]]; then
-        echo "[]"
-    else
-        echo "[$decoded_nums]"
-    fi
+    local bytes=$(echo "$input" | base64 -d 2>/dev/null | od -An -t u1 | tr -s ' ' ',')
+    bytes=$(echo "$bytes" | sed 's/^,//;s/,$//;s/ //g')
+    if [ -n "$bytes" ]; then echo "[$bytes]"; else echo ""; fi
 }
 
-# 注册/生成 WARP 账号 (需要 Python)
+# 注册 WARP
 register_warp() {
-    # 仅在此处检查 Python
     ensure_python || return 1
-
     echo -e "${YELLOW}正在连接 Cloudflare API 注册免费账号...${PLAIN}"
     
-    # 尝试安装 wg-tools 生成 Key (如果不存在)
     if ! command -v wg &> /dev/null; then
         echo -e "${YELLOW}安装 wireguard-tools 用于生成密钥...${PLAIN}"
         if [ -x "$(command -v apt)" ]; then apt install -y wireguard-tools; fi
         if [ -x "$(command -v yum)" ]; then yum install -y wireguard-tools; fi
-    fi
-
-    if ! command -v wg &> /dev/null; then
-        echo -e "${RED}无法安装 wireguard-tools，无法自动生成密钥。${PLAIN}"
-        return 1
     fi
 
     local priv_key=$(wg genkey)
@@ -142,65 +123,41 @@ register_warp() {
     local peer_pub=$(echo "$result" | jq -r '.config.peers[0].public_key')
     local client_id=$(echo "$result" | jq -r '.config.client_id')
     
-    if [[ "$v4" == "null" || -z "$v4" ]]; then
-        echo -e "${RED}注册失败，API 未返回有效 IP。请重试。${PLAIN}"
-        return 1
-    fi
+    if [[ "$v4" == "null" || -z "$v4" ]]; then echo -e "${RED}注册失败。${PLAIN}"; return 1; fi
     
-    # 使用 Python 计算 Reserved (取 client_id 解码后的前3字节)
     local reserved_json=$(python3 -c "import base64, json; decoded = base64.b64decode('$client_id'); print(json.dumps([x for x in decoded[0:3]]))" 2>/dev/null)
     
-    echo -e "${GREEN}注册成功!${PLAIN}"
     write_warp_config "$priv_key" "$peer_pub" "$v4" "$v6" "$reserved_json"
 }
 
-# 手动录入账号 (无需 Python，纯 Shell 尝试解码)
+# 手动录入
 manual_warp() {
-    echo -e "===================================================="
-    echo -e "请准备好你的 WARP 账号信息 (WireGuard 格式)"
-    echo -e "===================================================="
-    
+    echo -e "${GREEN}手动录入 WARP 信息${PLAIN}"
     read -p "私钥 (Private Key): " priv_key
-    read -p "公钥 (Peer Public Key, 留空默认为官方Key): " peer_pub
-    if [[ -z "$peer_pub" ]]; then
-        peer_pub="bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
-    fi
+    read -p "公钥 (Peer Public Key, 留空默认): " peer_pub
+    [[ -z "$peer_pub" ]] && peer_pub="bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
     
-    read -p "本机 IPv4 (如 172.16.0.2/32, 留空不填): " v4
-    read -p "本机 IPv6 (如 2606:4700:..., 留空不填): " v6
-    
-    echo -e "Reserved 值 (非常重要!)"
-    echo -e " - 格式 A (Base64): c+kIBA=="
-    echo -e " - 格式 B (CSV): 115,233,8"
-    read -p "请输入 Reserved: " res_input
+    read -p "本机 IPv4 (如 172.16.0.2/32): " v4
+    read -p "本机 IPv6 (如 2606:4700:...): " v6
+    read -p "Reserved (Base64 或 [1,2,3]): " res_input
     
     local reserved_json="[]"
-    
-    if [[ "$res_input" == *","* ]]; then
-        # CSV 直接转 JSON 数组
+    if [[ "$res_input" == *","* && "$res_input" != *"["* ]]; then
         reserved_json="[$res_input]"
+    elif [[ "$res_input" == *"["* ]]; then
+        reserved_json="$res_input"
     else
-        # 尝试使用纯 Shell (od) 解码 Base64，避免下载 Python
         reserved_json=$(base64_to_reserved_shell "$res_input")
-        
-        # 如果纯 Shell 解码失败 (例如系统没有 od)，则回退提示安装 Python
-        if [[ "$reserved_json" == "[]" || "$reserved_json" == "null" ]]; then
-             echo -e "${YELLOW}Shell 解码失败，尝试使用 Python 解码...${PLAIN}"
+        if [[ -z "$reserved_json" ]]; then
              ensure_python
-             if command -v python3 &> /dev/null; then
-                reserved_json=$(python3 -c "import base64, json; decoded = base64.b64decode('$res_input'); print(json.dumps([x for x in decoded]))" 2>/dev/null)
-             else
-                echo -e "${RED}无法解析 Reserved 值，请使用 CSV 格式 (如 1,2,3) 重试。${PLAIN}"
-                return
-             fi
+             reserved_json=$(python3 -c "import base64, json; decoded = base64.b64decode('$res_input'); print(json.dumps([x for x in decoded]))" 2>/dev/null)
         fi
     fi
     
-    echo -e "解析到的 Reserved: ${GREEN}$reserved_json${PLAIN}"
     write_warp_config "$priv_key" "$peer_pub" "$v4" "$v6" "$reserved_json"
 }
 
-# 写入配置文件 (Config.json)
+# 写入配置
 write_warp_config() {
     local priv="$1"
     local pub="$2"
@@ -209,105 +166,115 @@ write_warp_config() {
     local res="$5"
     
     local addr_json="[]"
-    if [[ -n "$v4" && "$v4" != "null" ]]; then
-        addr_json=$(echo "$addr_json" | jq --arg ip "$v4" '. + [$ip]')
-    fi
-    if [[ -n "$v6" && "$v6" != "null" ]]; then
-        addr_json=$(echo "$addr_json" | jq --arg ip "$v6" '. + [$ip]')
-    fi
+    if [[ -n "$v4" && "$v4" != "null" ]]; then addr_json=$(echo "$addr_json" | jq --arg ip "$v4" '. + [$ip]'); fi
+    if [[ -n "$v6" && "$v6" != "null" ]]; then addr_json=$(echo "$addr_json" | jq --arg ip "$v6" '. + [$ip]'); fi
     
-    # 构建 Outbound JSON
     local warp_json=$(jq -n \
-        --arg priv "$priv" \
-        --arg pub "$pub" \
-        --argjson addr "$addr_json" \
-        --argjson res "$res" \
-        '{
-            "type": "wireguard",
-            "tag": "WARP",
-            "server": "engage.cloudflareclient.com",
-            "server_port": 2408,
-            "local_address": $addr,
-            "private_key": $priv,
-            "peers": [
-                {
-                    "server": "engage.cloudflareclient.com",
-                    "server_port": 2408,
-                    "public_key": $pub,
-                    "reserved": $res
-                }
-            ]
-        }')
+        --arg priv "$priv" --arg pub "$pub" --argjson addr "$addr_json" --argjson res "$res" \
+        '{ "type": "wireguard", "tag": "WARP", "server": "engage.cloudflareclient.com", "server_port": 2408, "local_address": $addr, "private_key": $priv, "peers": [{ "server": "engage.cloudflareclient.com", "server_port": 2408, "public_key": $pub, "reserved": $res }] }')
 
-    echo -e "${YELLOW}正在写入配置文件...${PLAIN}"
+    echo -e "${YELLOW}正在写入配置...${PLAIN}"
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
-    
-    # 1. 删除旧 WARP
+    # 删除旧的
     tmp=$(jq 'del(.outbounds[] | select(.tag == "WARP"))' "$CONFIG_FILE")
     echo "$tmp" > "$CONFIG_FILE"
-    
-    # 2. 添加新 WARP
+    # 添加新的
     tmp=$(jq --argjson new "$warp_json" '.outbounds += [$new]' "$CONFIG_FILE")
     echo "$tmp" > "$CONFIG_FILE"
     
-    echo -e "${GREEN}WARP 节点已写入配置。${PLAIN}"
+    echo -e "${GREEN}WARP 节点配置完成。${PLAIN}"
     restart_sb
 }
 
 # ==========================================
-# 3. 路由规则管理
+# 3. 路由规则管理 (Modes)
 # ==========================================
 
-add_rule() {
-    local name="$1"     # 显示名称
-    local domains="$2"  # 域名列表字符串 "a.com b.com"
-    local geosite="$3"  # Geosite Tag "netflix"
-    
-    echo -e "------------------------------------------------"
-    echo -e "正在添加规则: ${SKYBLUE}$name${PLAIN} -> WARP"
-    echo -e "------------------------------------------------"
+# 模式一 & 二通用函数
+apply_routing_rule() {
+    local rule_json="$1"
+    echo -e "${YELLOW}正在应用路由规则...${PLAIN}"
+    local tmp=$(jq --argjson r "$rule_json" '.route.rules = [$r] + .route.rules' "$CONFIG_FILE")
+    echo "$tmp" > "$CONFIG_FILE"
+    restart_sb
+}
+
+# 模式一：流媒体分流
+mode_stream() {
     echo -e "请选择规则匹配模式:"
-    echo -e "  1. ${GREEN}域名列表 (Domain List)${PLAIN} - [推荐] 稳定，不依赖 Geosite 文件"
-    echo -e "  2. ${YELLOW}Geosite 规则集${PLAIN}       - 需确保本地有 geosite.db 或 rule_set"
+    echo -e "  1. ${GREEN}域名列表 (Domain List)${PLAIN} - [推荐] 稳定，不依赖 Geosite"
+    echo -e "  2. ${YELLOW}Geosite 规则集${PLAIN}       - 需确保本地有 geosite.db"
     read -p "请选择 (1/2): " mode
     
-    local new_rule=""
-    
-    if [[ "$mode" == "2" ]]; then
-        # Geosite 模式
-        new_rule=$(jq -n --arg g "$geosite" '{ "geosite": [$g], "outbound": "WARP" }')
-    else
-        # Domain List 模式
-        new_rule=$(jq -n --arg d "$domains" '{ "domain_suffix": ($d | split(" ")), "outbound": "WARP" }')
-    fi
-    
-    echo -e "${YELLOW}正在应用规则...${PLAIN}"
-    local tmp=$(jq --argjson r "$new_rule" '.route.rules = [$r] + .route.rules' "$CONFIG_FILE")
-    echo "$tmp" > "$CONFIG_FILE"
-    
-    echo -e "${GREEN}规则添加成功。${PLAIN}"
-    restart_sb
-}
-
-# 全局接管
-set_global() {
-    local type="$1" # v4, v6, dual
     local rule=""
-    case "$type" in
-        v4) rule=$(jq -n '{ "ip_version": 4, "outbound": "WARP" }') ;;
-        v6) rule=$(jq -n '{ "ip_version": 6, "outbound": "WARP" }') ;;
-        dual) rule=$(jq -n '{ "network": ["tcp","udp"], "outbound": "WARP" }') ;;
-    esac
-    
-    local tmp=$(jq --argjson r "$rule" '.route.rules = [$r] + .route.rules' "$CONFIG_FILE")
-    echo "$tmp" > "$CONFIG_FILE"
-    echo -e "${GREEN}全局规则已应用。${PLAIN}"
-    restart_sb
+    if [[ "$mode" == "2" ]]; then
+        rule=$(jq -n '{ "geosite": ["netflix","openai","disney","google","youtube"], "outbound": "WARP" }')
+    else
+        rule=$(jq -n '{ "domain_suffix": ["netflix.com","nflxvideo.net","openai.com","ai.com","disney.com","disneyplus.com","google.com","youtube.com"], "outbound": "WARP" }')
+    fi
+    apply_routing_rule "$rule"
 }
 
-# 移除 WARP 相关
+# 模式二：全局/IP接管
+mode_global() {
+    echo -e " a. 仅接管 IPv4"
+    echo -e " b. 仅接管 IPv6"
+    echo -e " c. 双栈全接管"
+    read -p "选择: " sub
+    local rule=""
+    case "$sub" in
+        a) rule=$(jq -n '{ "ip_version": 4, "outbound": "WARP" }') ;;
+        b) rule=$(jq -n '{ "ip_version": 6, "outbound": "WARP" }') ;;
+        c) rule=$(jq -n '{ "network": ["tcp","udp"], "outbound": "WARP" }') ;;
+    esac
+    apply_routing_rule "$rule"
+}
+
+# 模式三：指定节点接管 (修复的核心部分)
+mode_specific_node() {
+    if [[ ! -f "$CONFIG_FILE" ]]; then echo -e "${RED}无配置文件${PLAIN}"; return; fi
+    
+    echo -e "${SKYBLUE}正在读取 Sing-box 入站节点...${PLAIN}"
+    # 提取 tag, type, listen_port (如果有)
+    # Sing-box 的 inbounds 结构多样，这里尝试通用的提取
+    local node_list=$(jq -r '.inbounds[] | "\(.tag) | \(.type) | \(.listen_port // .listen // "N/A")"' "$CONFIG_FILE" | nl -w 2 -s " ")
+    
+    if [[ -z "$node_list" ]]; then
+        echo -e "${RED}未找到任何入站节点。${PLAIN}"; return
+    fi
+
+    echo -e "------------------------------------------------"
+    echo -e "序号 | Tag (标签)   | 类型      | 端口/监听"
+    echo -e "------------------------------------------------"
+    # 简单的格式化输出
+    echo "$node_list"
+    echo -e "------------------------------------------------"
+    echo -e "${YELLOW}请输入要走 WARP 的节点序号 (支持多选，空格分隔，如: 1 3)${PLAIN}"
+    read -p "选择: " selection
+
+    local selected_tags_json="[]"
+    
+    for num in $selection; do
+        local raw_line=$(echo "$node_list" | sed -n "${num}p")
+        # 提取第一列的 Tag (awk 默认空格分隔，这里由于上面的格式，tag 是第3列，序号是1，|是2)
+        # jq output format: "tag | type | port" -> nl: " 1 tag | type | port"
+        local tag=$(echo "$raw_line" | awk -F'|' '{print $1}' | awk '{print $2}')
+        
+        if [[ -n "$tag" ]]; then
+            selected_tags_json=$(echo "$selected_tags_json" | jq --arg t "$tag" '. + [$t]')
+            echo -e "已选择: ${GREEN}$tag${PLAIN}"
+        fi
+    done
+
+    # 生成规则: { "inbound": ["tag1", "tag2"], "outbound": "WARP" }
+    local rule=$(jq -n --argjson ib "$selected_tags_json" '{ "inbound": $ib, "outbound": "WARP" }')
+    
+    apply_routing_rule "$rule"
+}
+
+# 卸载 WARP
 uninstall_warp() {
-    echo -e "${YELLOW}正在清理 WARP 配置与路由规则...${PLAIN}"
+    echo -e "${YELLOW}正在清理...${PLAIN}"
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak_uninstall"
     
     local tmp=$(jq 'del(.outbounds[] | select(.tag == "WARP"))' "$CONFIG_FILE")
@@ -316,83 +283,66 @@ uninstall_warp() {
     tmp=$(jq 'del(.route.rules[] | select(.outbound == "WARP"))' "$CONFIG_FILE")
     echo "$tmp" > "$CONFIG_FILE"
     
-    echo -e "${GREEN}清理完成。已自动重启服务。${PLAIN}"
     restart_sb
 }
 
 # ==========================================
-# 4. 菜单界面
+# 4. 菜单逻辑
 # ==========================================
 
-check_status() {
-    if jq -e '.outbounds[] | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null; then
-        echo -e "当前状态: ${GREEN}已配置 Native WARP${PLAIN}"
-    else
-        echo -e "当前状态: ${RED}未配置${PLAIN}"
-    fi
-}
-
-menu() {
+show_menu() {
     check_dependencies
-    clear
-    echo -e "===================================================="
-    echo -e "   Sing-box Native WARP 托管脚本 (v3.9.1)"
-    echo -e "   配置文件: ${SKYBLUE}$CONFIG_FILE${PLAIN}"
-    echo -e "===================================================="
-    check_status
-    echo -e "----------------------------------------------------"
-    echo -e "  1. ${GREEN}配置/重置 WARP 账号${PLAIN} (自动注册 / 手动录入)"
-    echo -e "  2. ${GREEN}添加分流规则${PLAIN} (Netflix/OpenAI/Disney+)"
-    echo -e "  3. ${GREEN}全局流量接管${PLAIN} (IPv4 / IPv6 / 双栈)"
-    echo -e "  4. ${RED}卸载/移除 WARP${PLAIN}"
-    echo -e "  0. 退出脚本"
-    echo -e "----------------------------------------------------"
-    read -p " 请选择: " choice
-    
-    case $choice in
-        1)
-            echo -e "  1. 自动注册 (免费账号, 需下载 Python)"
-            echo -e "  2. 手动录入 (支持 Teams, 纯 Shell 模式)"
-            read -p "  请选择: " reg_type
-            if [[ "$reg_type" == "1" ]]; then register_warp; 
-            elif [[ "$reg_type" == "2" ]]; then manual_warp; 
-            else echo -e "${RED}无效选择${PLAIN}"; fi
-            ;;
-        2)
-            echo -e "  a. 解锁 ChatGPT/OpenAI"
-            echo -e "  b. 解锁 Netflix"
-            echo -e "  c. 解锁 Disney+"
-            echo -e "  d. 解锁 Telegram"
-            echo -e "  e. 解锁 Google"
-            read -p "  请选择目标: " rule_target
-            case "$rule_target" in
-                a) add_rule "OpenAI" "openai.com ai.com chatgpt.com" "openai" ;;
-                b) add_rule "Netflix" "netflix.com nflxvideo.net nflxext.com nflxso.net" "netflix" ;;
-                c) add_rule "Disney+" "disney.com disneyplus.com bamgrid.com" "disney" ;;
-                d) add_rule "Telegram" "telegram.org t.me" "telegram" ;;
-                e) add_rule "Google" "google.com googleapis.com gvt1.com youtube.com" "google" ;;
-                *) echo -e "${RED}无效选择${PLAIN}" ;;
-            esac
-            ;;
-        3)
-            echo -e "  a. 仅接管 IPv4 流量"
-            echo -e "  b. 仅接管 IPv6 流量"
-            echo -e "  c. 双栈全局接管 (所有流量)"
-            read -p "  请选择: " glob_type
-            case "$glob_type" in
-                a) set_global "v4" ;;
-                b) set_global "v6" ;;
-                c) set_global "dual" ;;
-            esac
-            ;;
-        4) uninstall_warp ;;
-        0) exit 0 ;;
-        *) echo -e "${RED}无效输入${PLAIN}" ;;
-    esac
-    
-    echo -e ""
-    read -p "按回车键返回菜单..." 
-    menu
+    while true; do
+        clear
+        local status_text="${RED}未配置${PLAIN}"
+        if jq -e '.outbounds[] | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null; then
+            status_text="${GREEN}已配置${PLAIN}"
+        fi
+        
+        echo -e "================ Native WARP 配置向导 (Sing-box) ================"
+        echo -e " 配置文件: ${SKYBLUE}$CONFIG_FILE${PLAIN}"
+        echo -e " 凭证状态: [$status_text]"
+        echo -e "----------------------------------------------------"
+        echo -e " [基础账号]"
+        echo -e " 1. 注册/配置 WARP 凭证 (自动获取 或 手动输入)"
+        echo -e " 2. 查看当前凭证信息 (配置文件中可见)"
+        echo -e ""
+        echo -e " [策略模式 - 单选]"
+        echo -e " 3. ${SKYBLUE}模式一：智能流媒体分流 (推荐)${PLAIN}"
+        echo -e "    ${GRAY}(Netflix/Disney+/OpenAI/Google -> WARP)${PLAIN}"
+        echo -e ""
+        echo -e " 4. ${SKYBLUE}模式二：全局接管 (隐藏 IP)${PLAIN}"
+        echo -e "    ${GRAY}---> 拯救 Google 验证码 / 单栈变双栈${PLAIN}"
+        echo -e ""
+        echo -e " 5. ${SKYBLUE}模式三：指定节点接管 (多节点共存)${PLAIN}"
+        echo -e "    ${GRAY}---> 选择特定端口强制走 WARP 出口${PLAIN}"
+        echo -e ""
+        echo -e " [维护]"
+        echo -e " 7. ${RED}禁用/卸载 Native WARP (恢复直连)${PLAIN}"
+        echo -e " 0. 返回上级菜单"
+        echo -e "===================================================="
+        read -p "请输入选项: " choice
+        
+        case "$choice" in
+            1)
+                echo -e "  1. 自动注册 (需 Python)"
+                echo -e "  2. 手动录入 (Base64/CSV)"
+                read -p "  请选择: " reg_type
+                if [[ "$reg_type" == "1" ]]; then register_warp; else manual_warp; fi
+                read -p "按回车继续..."
+                ;;
+            2)
+                echo -e "请查看配置文件中的 WARP outbound 字段。"
+                read -p "按回车继续..."
+                ;;
+            3) mode_stream; read -p "按回车继续..." ;;
+            4) mode_global; read -p "按回车继续..." ;;
+            5) mode_specific_node; read -p "按回车继续..." ;;
+            7) uninstall_warp; read -p "按回车继续..." ;;
+            0) exit 0 ;;
+            *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
+        esac
+    done
 }
 
-menu
+show_menu
