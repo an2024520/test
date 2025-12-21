@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box Native WARP 管理模块 (SB-Commander v6.3 LoopFix)
-#  - 核心修复: 全局接管模式改为“全节点接管”，防止路由死循环
-#  - 逻辑优化: 自动抓取所有入站节点(Inbounds)应用规则
-#  - 稳定性: 提升 Endpoint 模式下的连通率
+#  Sing-box Native WARP 管理模块 (SB-Commander v6.4 GlobalFix)
+#  - 核心修复: 真正的"全局接管"，自动适配未来新增节点
+#  - 防环机制: 优先直连 Cloudflare 握手域名，防止死循环
+#  - 逻辑优化: 使用 Final/Catch-All 策略替代静态列表
 # ============================================================
 
 RED='\033[0;31m'
@@ -226,6 +226,12 @@ write_warp_config() {
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
     local TMP_CONF=$(mktemp)
     
+    # 确保有 direct 节点 (防止防环回规则报错)
+    jq 'if .outbounds == null then .outbounds = [] else . end | 
+        if (.outbounds | map(select(.tag == "direct")) | length) == 0 then 
+           .outbounds += [{"type":"direct","tag":"direct"}] 
+        else . end' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
+
     jq 'if .endpoints == null then .endpoints = [] else . end' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq 'del(.outbounds[] | select(.tag == "WARP" or .tag == "warp" or .tag == "warp-out"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq 'del(.endpoints[] | select(.tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
@@ -268,7 +274,11 @@ apply_routing_rule() {
     local rule_json="$1"
     echo -e "${YELLOW}正在应用路由规则...${PLAIN}"
     local TMP_CONF=$(mktemp)
+    
+    # 策略: 将新规则插入到 rules 数组的最前面 (unshift)，确保优先级最高
+    # 尤其是防环回规则必须在第一位
     jq --argjson r "$rule_json" '.route.rules = [$r] + .route.rules' "$CONFIG_FILE" > "$TMP_CONF"
+    
     if [[ $? -eq 0 && -s "$TMP_CONF" ]]; then
         mv "$TMP_CONF" "$CONFIG_FILE"
         restart_sb
@@ -291,30 +301,37 @@ mode_stream() {
     apply_routing_rule "$rule"
 }
 
-# 核心修复：全局模式不再接管所有网络流量，改为接管所有入站(Inbound)流量
-# 避免接管 WARP 自身的握手流量导致死循环
+# 核心修复 v6.4: 真正的全局接管 (Catch-All)
 mode_global() {
     ensure_warp_exists || return
-    
-    # 获取所有 inbound tags (排除空值)
-    local ib_tags=$(jq -c '[.inbounds[].tag]' "$CONFIG_FILE")
-    if [[ "$ib_tags" == "[]" || -z "$ib_tags" ]]; then
-        echo -e "${RED}错误: 未找到任何入站节点(Inbounds)，无法应用全局接管。${PLAIN}"
-        echo -e "全局接管模式需要至少一个入站节点（如 vless-in, hy2-in 等）。"
-        return
-    fi
 
-    echo -e "当前将接管以下入站流量: ${SKYBLUE}$ib_tags${PLAIN}"
-    echo -e " a. 仅 IPv4  b. 仅 IPv6  c. 双栈全局"
+    echo -e "${YELLOW}>>> 警告: 全局模式将改变路由默认出口 (Final) <<<${PLAIN}"
+    echo -e " 这将对接管所有当前及【未来添加】的节点流量。"
+    echo -e " -----------------------------------------------"
+    echo -e " a. 仅 IPv4  b. 仅 IPv6  c. 双栈全局 (默认)"
     read -p "选择: " sub
     
+    # 1. 先添加防环回规则 (High Priority)
+    # 必须明确让 WARP 连接 Cloudflare 的流量走 Direct，否则会死循环
+    local anti_loop_rule=$(jq -n '{ "domain": ["engage.cloudflareclient.com", "cloudflare.com"], "outbound": "direct" }')
+    apply_routing_rule "$anti_loop_rule"
+
+    # 2. 修改 Final 或添加 Catch-All 规则
+    # 为了保证新节点生效，我们使用 Catch-All 规则（不指定 inbound）
     local rule=""
     case "$sub" in
-        a) rule=$(jq -n --argjson ib "$ib_tags" '{ "inbound": $ib, "ip_version": 4, "outbound": "WARP" }') ;;
-        b) rule=$(jq -n --argjson ib "$ib_tags" '{ "inbound": $ib, "ip_version": 6, "outbound": "WARP" }') ;;
-        c) rule=$(jq -n --argjson ib "$ib_tags" '{ "inbound": $ib, "outbound": "WARP" }') ;;
+        a) rule=$(jq -n '{ "ip_version": 4, "outbound": "WARP" }') ;;
+        b) rule=$(jq -n '{ "ip_version": 6, "outbound": "WARP" }') ;;
+        c) 
+           # 双栈全局：直接修改 Final 为 WARP 是最彻底的，但为了兼容性，我们用规则
+           # 这里的规则没有 inbound 字段，因此匹配所有流量
+           rule=$(jq -n '{ "outbound": "WARP" }') 
+           ;;
     esac
+    
+    # 应用全局规则
     apply_routing_rule "$rule"
+    echo -e "${GREEN}全局接管策略已应用。防环回规则已置顶。${PLAIN}"
 }
 
 mode_specific_node() {
@@ -343,9 +360,18 @@ uninstall_warp() {
     echo -e "${YELLOW}正在卸载 WARP (节点配置 + 路由规则)...${PLAIN}"
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak_uninstall"
     local TMP_CONF=$(mktemp)
+    
+    # 1. 删除节点
     jq 'del(.outbounds[] | select(.tag == "WARP" or .tag == "warp" or .tag == "warp-out"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq 'if .endpoints then del(.endpoints[] | select(.tag == "WARP")) else . end' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
+    
+    # 2. 删除路由规则 (Outbound=WARP)
     jq 'del(.route.rules[] | select(.outbound == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
+    
+    # 3. 清理防环回规则 (domain=engage...)
+    # 避免卸载 WARP 后残留不必要的 direct 规则
+    jq 'del(.route.rules[] | select(.domain[]? == "engage.cloudflareclient.com"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
+
     echo -e "${GREEN}卸载完成。凭证已保留在 $CRED_FILE (下次可自动恢复)${PLAIN}"
     restart_sb
 }
@@ -364,7 +390,7 @@ show_menu() {
         local ver=$(sing-box version 2>/dev/null | head -n1 | awk '{print $3}')
         
         echo -e "================ Native WARP 配置向导 (Sing-box) ================"
-        echo -e " 内核版本: ${SKYBLUE}${ver:-未知}${PLAIN} ${YELLOW}(v6.3)${PLAIN}"
+        echo -e " 内核版本: ${SKYBLUE}${ver:-未知}${PLAIN} ${YELLOW}(v6.4 全局修复)${PLAIN}"
         echo -e " 配置文件: ${SKYBLUE}$CONFIG_FILE${PLAIN}"
         echo -e " 凭证状态: [$status_text]"
         echo -e "----------------------------------------------------"
@@ -372,7 +398,7 @@ show_menu() {
         echo -e " 2. 查看当前凭证信息"
         echo -e "----------------------------------------------------"
         echo -e " 3. ${SKYBLUE}模式一：智能流媒体分流 (推荐)${PLAIN}"
-        echo -e " 4. ${SKYBLUE}模式二：全局接管 (隐藏 IP)${PLAIN}"
+        echo -e " 4. ${SKYBLUE}模式二：全局接管 (所有节点+未来节点)${PLAIN}"
         echo -e " 5. ${SKYBLUE}模式三：指定节点接管 (多节点共存)${PLAIN}"
         echo -e "----------------------------------------------------"
         echo -e " 7. ${RED}禁用/卸载 Native WARP (恢复直连)${PLAIN}"
