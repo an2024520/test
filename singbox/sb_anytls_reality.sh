@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box 节点新增: AnyTLS + Reality (v2.2 终极版)
+#  Sing-box 节点新增: AnyTLS + Reality (v2.3 链接修复版)
 #  - 协议: AnyTLS (Sing-box 专属拟态协议)
-#  - 修复: 强制切换至 Systemd 日志 (彻底解决 Permission denied)
-#  - 兼容: 支持 v2rayN (v7.14+) 分享链接
+#  - 修复: v2rayN 分享链接参数修正 (fp=chrome)
+#  - 核心: Systemd 日志托管 (无 Permission denied 问题)
 # ============================================================
 
 # 颜色定义
@@ -128,7 +128,6 @@ echo -e "${YELLOW}正在更新配置文件...${PLAIN}"
 NODE_TAG="anytls-${PORT}"
 
 # === 关键步骤 1: 强制将 Log 改为 Console 输出 (解决 Permission Denied) ===
-# 无论之前配置如何，这里强制覆盖 log 字段
 tmp_log=$(mktemp)
 jq '.log.output = "" | .log.timestamp = false' "$CONFIG_FILE" > "$tmp_log" && mv "$tmp_log" "$CONFIG_FILE"
 
@@ -183,7 +182,9 @@ if systemctl is-active --quiet sing-box; then
     PUBLIC_IP=$(curl -s4m5 https://api.ip.sb/ip || curl -s4 ifconfig.me)
     NODE_NAME="SB-AnyTLS-${PORT}"
     
-    SHARE_LINK="anytls://${USER_PASS}@${PUBLIC_IP}:${PORT}?security=reality&sni=${SNI}&fingerprint=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp#${NODE_NAME}"
+    # === 修复点: fingerprint 改为 fp ===
+    # v2rayN 识别标准: fp=chrome
+    SHARE_LINK="anytls://${USER_PASS}@${PUBLIC_IP}:${PORT}?security=reality&sni=${SNI}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp#${NODE_NAME}"
 
     echo -e ""
     echo -e "${GREEN}========================================${PLAIN}"
