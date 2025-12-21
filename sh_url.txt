@@ -16,3 +16,9 @@ install_cf_tunnel_debian.sh https://raw.githubusercontent.com/an2024520/test/ref
 xray_module_warp_native_route.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_module_warp_native_route.sh
 sb_install_core.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/singbox/sb_install_core.sh
 sb_uninstall.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/singbox/sb_uninstall.sh
+sb_vless_h2_reality.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/singbox/sb_vless_h2_reality.sh
+sb_vless_vision_reality.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/singbox/sb_vless_vision_reality.sh
+sb_vless_ws_tls.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/singbox/sb_vless_ws_tls.sh
+sb_vless_ws_tunnel.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/singbox/sb_vless_ws_tunnel.sh
+sb_get_node_details.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/singbox/sb_get_node_details.sh
+sb_module_node_del.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/singbox/sb_module_node_del.sh
