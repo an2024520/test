@@ -1,34 +1,100 @@
 #!/bin/bash
 
 # =================================================
-# 脚本名称：sb_get_node_details.sh
-# 作用：读取 Sing-box 的 JSON 配置文件，提取指定 Tag 的节点，并逆向生成分享链接
-# 依赖：jq
-# 用法：./sb_get_node_details.sh <config_path> <node_tag>
+# 脚本名称：sb_get_node_details.sh (交互增强版 v2.0)
+# 作用：自动寻找配置 -> 列出节点 -> 交互选择 -> 生成链接
 # =================================================
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+SKYBLUE='\033[0;36m'
+PLAIN='\033[0m'
 
 CONFIG_FILE="$1"
 NODE_TAG="$2"
 
-if [[ -z "$CONFIG_FILE" || -z "$NODE_TAG" ]]; then
-    echo "Usage: $0 <config_path> <node_tag>"
-    exit 1
+# -------------------------------------------------
+# 1. 自动寻找配置文件 (如果未通过参数传入)
+# -------------------------------------------------
+if [[ -z "$CONFIG_FILE" ]]; then
+    # 定义搜索顺序：优先 /usr/local/etc (手动安装), 其次 /etc (包管理安装)
+    PATHS=("/usr/local/etc/sing-box/config.json" "/etc/sing-box/config.json" "$HOME/sing-box/config.json")
+    
+    for p in "${PATHS[@]}"; do
+        if [[ -f "$p" ]]; then
+            CONFIG_FILE="$p"
+            break
+        fi
+    done
+
+    if [[ -z "$CONFIG_FILE" ]]; then
+        echo -e "${RED}错误: 未找到 Sing-box 配置文件。${PLAIN}"
+        echo -e "请尝试手动指定路径: $0 <path> <tag>"
+        exit 1
+    fi
+    echo -e "${GREEN}读取配置: $CONFIG_FILE${PLAIN}"
 fi
 
-if [ ! -f "$CONFIG_FILE" ]; then
-    echo "Error: Config file not found: $CONFIG_FILE"
-    exit 1
-fi
-
-# 检查 jq 是否安装
+# 检查 jq
 if ! command -v jq &> /dev/null; then
-    echo "Error: jq is required but not installed."
+    echo -e "${RED}错误: 需要安装 jq (apt install jq / yum install jq)${PLAIN}"
     exit 1
 fi
 
 # -------------------------------------------------
-# 辅助函数：URL 编码 (填坑的关键)
+# 2. 如果没有传入 TAG，则进入“交互式选择模式”
 # -------------------------------------------------
+if [[ -z "$NODE_TAG" ]]; then
+    # 获取所有非系统保留的节点
+    # 过滤掉 direct, block, dns, selector, urltest
+    RAW_TAGS=$(jq -r '.outbounds[] | select(.type != "direct" and .type != "block" and .type != "dns" and .type != "selector" and .type != "urltest") | .tag' "$CONFIG_FILE")
+    
+    # 将结果转为数组
+    readarray -t TAG_LIST <<< "$RAW_TAGS"
+
+    # 处理空列表的情况 (即你之前遇到的情况)
+    # readarray 在空输入时可能产生含有一个空元素的数组，需判空
+    # 只要第一个元素为空，就视为没找到
+    if [[ -z "${TAG_LIST[0]}" ]]; then
+        echo -e "${YELLOW}警告: 在配置文件中未找到有效的代理节点 (VLESS/VMess/Hysteria2)。${PLAIN}"
+        echo -e "当前配置文件中的所有 Outbounds (供参考):"
+        echo "-------------------------------------------"
+        jq -r '.outbounds[] | " - " + .tag + " [" + .type + "]"' "$CONFIG_FILE"
+        echo "-------------------------------------------"
+        echo -e "${SKYBLUE}建议: 请先在主菜单选择 1-4 添加一个节点。${PLAIN}"
+        exit 0
+    fi
+
+    echo -e "-------------------------------------------"
+    echo -e "发现以下代理节点:"
+    i=1
+    for tag in "${TAG_LIST[@]}"; do
+        if [[ -n "$tag" ]]; then
+            echo -e " ${GREEN}$i.${PLAIN} $tag"
+            let i++
+        fi
+    done
+    echo -e "-------------------------------------------"
+    
+    read -p "请输入序号选择节点 (直接回车退出): " CHOICE
+    if [[ -z "$CHOICE" ]]; then exit 0; fi
+    
+    # 获取数组下标 (序号-1)
+    INDEX=$((CHOICE-1))
+    NODE_TAG="${TAG_LIST[$INDEX]}"
+    
+    if [[ -z "$NODE_TAG" ]]; then
+        echo -e "${RED}无效的选择。${PLAIN}"
+        exit 1
+    fi
+    echo -e "正在解析节点: ${GREEN}$NODE_TAG${PLAIN} ..."
+fi
+
+# =================================================
+# 下面是解析逻辑 (核心部分)
+# =================================================
+
 urlencode() {
     local string="${1}"
     local strlen=${#string}
@@ -46,49 +112,35 @@ urlencode() {
     echo "${encoded}"
 }
 
-# -------------------------------------------------
-# 1. 从 JSON 中提取对应 Tag 的 Outbound 对象
-# -------------------------------------------------
-# 注意：Sing-box 的结构通常是 { "outbounds": [ ... ] }
+# 提取节点对象
 NODE_JSON=$(jq -r --arg tag "$NODE_TAG" '.outbounds[] | select(.tag==$tag)' "$CONFIG_FILE")
 
 if [[ -z "$NODE_JSON" ]]; then
-    echo "Error: Node with tag '$NODE_TAG' not found."
+    echo "Error: Node '$NODE_TAG' not found."
     exit 1
 fi
 
-# 提取基础信息
 TYPE=$(echo "$NODE_JSON" | jq -r '.type')
 SERVER=$(echo "$NODE_JSON" | jq -r '.server // empty')
 PORT=$(echo "$NODE_JSON" | jq -r '.server_port // empty')
 UUID=$(echo "$NODE_JSON" | jq -r '.uuid // empty')
 PASSWORD=$(echo "$NODE_JSON" | jq -r '.password // empty')
 
-# 如果没有 server 或 port，可能不是代理节点（如 selector, urltest），直接返回 JSON
 if [[ -z "$SERVER" || -z "$PORT" ]]; then
-    echo "Info: Not a standard proxy node (Missing server/port). Dumping JSON:"
+    echo "Info: Not a standard proxy node. JSON Dump:"
     echo "$NODE_JSON"
     exit 0
 fi
-
-# -------------------------------------------------
-# 2. 根据协议类型拼装链接
-# -------------------------------------------------
 
 LINK=""
 
 case "$TYPE" in
     "vless")
-        # --- VLESS 拼装逻辑 ---
-        # 提取传输层和安全层信息
         FLOW=$(echo "$NODE_JSON" | jq -r '.flow // empty')
         TLS_TYPE=$(echo "$NODE_JSON" | jq -r '.tls.enabled // "false"')
         TRANSPORT=$(echo "$NODE_JSON" | jq -r '.transport.type // "tcp"')
-        
-        # 构建参数
         PARAMS="security=none"
         if [[ "$TLS_TYPE" == "true" ]]; then
-            # 判断是 TLS 还是 Reality
             REALITY=$(echo "$NODE_JSON" | jq -r '.tls.reality.enabled // "false"')
             if [[ "$REALITY" == "true" ]]; then
                 PARAMS="security=reality"
@@ -96,7 +148,6 @@ case "$TYPE" in
                 SNI=$(echo "$NODE_JSON" | jq -r '.tls.server_name // empty')
                 SID=$(echo "$NODE_JSON" | jq -r '.tls.reality.short_id // empty')
                 FP=$(echo "$NODE_JSON" | jq -r '.tls.utls.fingerprint // "chrome"')
-                
                 [[ -n "$PBK" ]] && PARAMS+="&pbk=$PBK"
                 [[ -n "$SNI" ]] && PARAMS+="&sni=$SNI"
                 [[ -n "$SID" ]] && PARAMS+="&sid=$SID"
@@ -107,8 +158,6 @@ case "$TYPE" in
                 [[ -n "$SNI" ]] && PARAMS+="&sni=$SNI"
             fi
         fi
-
-        # 拼接传输层参数 (ws, grpc 等)
         PARAMS+="&type=$TRANSPORT"
         if [[ "$TRANSPORT" == "ws" ]]; then
             WS_PATH=$(echo "$NODE_JSON" | jq -r '.transport.path // "/"')
@@ -119,79 +168,45 @@ case "$TYPE" in
             SERVICE_NAME=$(echo "$NODE_JSON" | jq -r '.transport.service_name // empty')
             [[ -n "$SERVICE_NAME" ]] && PARAMS+="&serviceName=$(urlencode "$SERVICE_NAME")"
         fi
-
-        # XTLS Flow
         [[ -n "$FLOW" ]] && PARAMS+="&flow=$FLOW"
-
-        # 最终拼接 VLESS 链接
-        # 格式: vless://uuid@host:port?params#tag
         LINK="vless://${UUID}@${SERVER}:${PORT}?${PARAMS}#$(urlencode "$NODE_TAG")"
         ;;
 
     "vmess")
-        # --- VMESS 拼装逻辑 (JSON -> Base64) ---
-        # VMess 链接通常是 base64 编码的一个 JSON 对象
-        # 我们需要构造这个标准 JSON 结构 (VMess Link Standard)
-        
         ALTER_ID=$(echo "$NODE_JSON" | jq -r '.alter_id // 0')
         NET=$(echo "$NODE_JSON" | jq -r '.transport.type // "tcp"')
         TLS_ENABLED=$(echo "$NODE_JSON" | jq -r '.tls.enabled // "false"')
-        
-        # 默认为 none
         VMESS_TLS=""
         if [[ "$TLS_ENABLED" == "true" ]]; then VMESS_TLS="tls"; fi
-
-        # 构造 VMess 标准 JSON 对象
-        # 注意：这里需要根据 Transport 细化字段，这里提供最简通用模板
-        VMESS_OBJ=$(jq -n \
-            --arg v "2" \
-            --arg ps "$NODE_TAG" \
-            --arg add "$SERVER" \
-            --arg port "$PORT" \
-            --arg id "$UUID" \
-            --arg aid "$ALTER_ID" \
-            --arg net "$NET" \
-            --arg type "none" \
-            --arg tls "$VMESS_TLS" \
-            '{v:$v, ps:$ps, add:$add, port:$port, id:$id, aid:$aid, net:$net, type:$type, host:"", path:"", tls:$tls}')
-        
-        # 如果是 WS，需要补全 path 和 host
+        VMESS_OBJ=$(jq -n --arg v "2" --arg ps "$NODE_TAG" --arg add "$SERVER" --arg port "$PORT" --arg id "$UUID" --arg aid "$ALTER_ID" --arg net "$NET" --arg type "none" --arg tls "$VMESS_TLS" '{v:$v, ps:$ps, add:$add, port:$port, id:$id, aid:$aid, net:$net, type:$type, host:"", path:"", tls:$tls}')
         if [[ "$NET" == "ws" ]]; then
             WS_PATH=$(echo "$NODE_JSON" | jq -r '.transport.path // "/"')
             WS_HOST=$(echo "$NODE_JSON" | jq -r '.transport.headers.Host // ""')
             VMESS_OBJ=$(echo "$VMESS_OBJ" | jq --arg path "$WS_PATH" --arg host "$WS_HOST" '.path=$path | .host=$host')
         fi
-
-        # Base64 编码
         B64_VMESS=$(echo -n "$VMESS_OBJ" | base64 -w 0)
         LINK="vmess://${B64_VMESS}"
         ;;
     
     "hysteria2")
-        # --- Hysteria2 拼装逻辑 ---
-        # 格式: hysteria2://password@server:port?params#tag
-        # 参数映射需要特别注意 Singbox 字段
-        
         PARAMS="insecure=0"
         SNI=$(echo "$NODE_JSON" | jq -r '.tls.server_name // empty')
         INSECURE=$(echo "$NODE_JSON" | jq -r '.tls.insecure // "false"')
         OBFS_PASS=$(echo "$NODE_JSON" | jq -r '.obfs.password // empty')
-
         [[ -n "$SNI" ]] && PARAMS+="&sni=$SNI"
         if [[ "$INSECURE" == "true" ]]; then PARAMS+="&insecure=1"; fi
         [[ -n "$OBFS_PASS" ]] && PARAMS+="&obfs=salamander&obfs-password=$OBFS_PASS"
-
         LINK="hysteria2://${PASSWORD}@${SERVER}:${PORT}?${PARAMS}#$(urlencode "$NODE_TAG")"
         ;;
 
     *)
-        echo "Warning: Protocol '$TYPE' conversion logic not fully implemented yet. Dumping JSON."
+        echo "Unknown protocol. Raw JSON:"
         echo "$NODE_JSON"
         exit 0
         ;;
 esac
 
-# -------------------------------------------------
-# 3. 输出结果
-# -------------------------------------------------
-echo "$LINK"
+echo ""
+echo -e "分享链接："
+echo -e "${SKYBLUE}$LINK${PLAIN}"
+echo ""
