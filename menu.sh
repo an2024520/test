@@ -195,7 +195,59 @@ menu_nodes_sb() {
             2) check_run "$FILE_SB_ADD_VISION" ;;
             3) check_run "$FILE_SB_ADD_WS" ;;
             4) check_run "$FILE_SB_ADD_TUNNEL" ;;
-            5) check_run "$FILE_SB_INFO" ;;
+            5) 
+                # --- 手动下载/更新检查 (因为 check_run 不支持传参，所以这里手动处理) ---
+                if [[ ! -f "$FILE_SB_INFO" ]]; then
+                    echo -e "${YELLOW}正在获取组件 [$FILE_SB_INFO] ...${PLAIN}"
+                    local script_url=$(get_url_by_name "$FILE_SB_INFO")
+                    if [[ -z "$script_url" ]]; then 
+                        echo -e "${RED}错误: sh_url.txt 中未找到该文件记录。${PLAIN}"; 
+                        read -p "按回车继续..."; continue 
+                    fi
+                    mkdir -p "$(dirname "$FILE_SB_INFO")"
+                    wget -qO "$FILE_SB_INFO" "$script_url"
+                    if [[ $? -ne 0 ]]; then 
+                         echo -e "${RED}下载失败。${PLAIN}"; 
+                         read -p "按回车继续..."; continue 
+                    fi
+                    chmod +x "$FILE_SB_INFO"
+                    echo -e "${GREEN}获取成功。${PLAIN}"
+                fi
+
+                echo -e ">>> 查看 Sing-box 节点链接 (VLESS/VMess/Hysteria2)"
+                
+                # 1. 确认配置文件路径
+                read -p "请输入 Sing-box 配置文件路径 (默认: /etc/sing-box/config.json): " SB_CONFIG_PATH
+                SB_CONFIG_PATH=${SB_CONFIG_PATH:-"/etc/sing-box/config.json"}
+                
+                if [ ! -f "$SB_CONFIG_PATH" ]; then
+                    echo -e "${RED}错误: 找不到配置文件 $SB_CONFIG_PATH${PLAIN}"
+                else
+                    # 2. 检查 jq
+                    if ! command -v jq &> /dev/null; then
+                        echo -e "${RED}错误: 系统未安装 jq，无法列出节点。${PLAIN}"
+                        echo -e "建议运行核心安装脚本或手动安装 jq (apt install jq / yum install jq)"
+                    else
+                        echo "----------------------------------------"
+                        echo "发现以下节点 Tag (自动过滤 Direct/Block 等):"
+                        jq -r '.outbounds[] | select(.type != "direct" and .type != "block" and .type != "dns" and .type != "selector" and .type != "urltest") | .tag' "$SB_CONFIG_PATH"
+                        echo "----------------------------------------"
+                        
+                        # 3. 输入 Tag
+                        read -p "请输入要导出的节点 Tag (复制上面的名字): " NODE_TAG
+                        
+                        if [ -n "$NODE_TAG" ]; then
+                            # 4. 调用脚本
+                            ./"$FILE_SB_INFO" "$SB_CONFIG_PATH" "$NODE_TAG"
+                        else
+                            echo "未输入 Tag，操作取消。"
+                        fi
+                    fi
+                fi
+                
+                # 暂停查看结果
+                echo -e ""; read -p "操作结束，按回车键继续..."
+                ;;
             6) check_run "$FILE_SB_DEL" ;;
             0) return ;;
             *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
