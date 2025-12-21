@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box Native WARP 管理模块 (SB-Commander v6.1)
-#  - 核心修复: 补全 endpoints 模式下 peers 的 allowed_ips (必填)
-#  - 架构: 适配 Sing-box 1.12+ (Endpoints + Address/Port)
-#  - 体验: 修复临时文件删除报错 / IPv4 默认值优化
+#  Sing-box Native WARP 管理模块 (SB-Commander v6.2 LogicFix)
+#  - 逻辑修复: 杜绝“有规则无节点”的断链问题
+#  - 新增特性: 凭证持久化保存 (warp_credentials.conf)
+#  - 智能拦截: 未配置节点时禁止添加路由规则
 # ============================================================
 
 RED='\033[0;31m'
@@ -18,6 +18,7 @@ PLAIN='\033[0m'
 # ==========================================
 
 CONFIG_FILE=""
+CRED_FILE="/etc/sing-box/warp_credentials.conf"
 PATHS=("/usr/local/etc/sing-box/config.json" "/etc/sing-box/config.json" "$HOME/sing-box/config.json")
 
 for p in "${PATHS[@]}"; do
@@ -28,6 +29,9 @@ if [[ -z "$CONFIG_FILE" ]]; then
     echo -e "${RED}错误: 未检测到 config.json 配置文件！${PLAIN}"
     exit 1
 fi
+
+# 确保配置目录存在以便保存凭证
+mkdir -p "$(dirname "$CRED_FILE")"
 
 check_dependencies() {
     if ! command -v jq &> /dev/null; then apt-get install -y jq || yum install -y jq; fi
@@ -43,7 +47,6 @@ ensure_python() {
 
 restart_sb() {
     echo -e "${YELLOW}重启 Sing-box 服务...${PLAIN}"
-    # 检查配置语法
     if command -v sing-box &> /dev/null; then
         if ! sing-box check -c "$CONFIG_FILE" > /dev/null 2>&1; then
              echo -e "${RED}配置语法校验失败！请检查以下错误：${PLAIN}"
@@ -88,6 +91,18 @@ base64_to_reserved_shell() {
     [[ -n "$bytes" ]] && echo "[$bytes]" || echo ""
 }
 
+# 保存凭证到本地
+save_credentials() {
+    cat > "$CRED_FILE" <<EOF
+PRIV_KEY="$1"
+PUB_KEY="$2"
+V4_ADDR="$3"
+V6_ADDR="$4"
+RESERVED="$5"
+EOF
+    echo -e "${GREEN}凭证已备份至: $CRED_FILE${PLAIN}"
+}
+
 register_warp() {
     ensure_python || return 1
     echo -e "${YELLOW}正在注册免费账号...${PLAIN}"
@@ -107,42 +122,71 @@ register_warp() {
     
     if [[ "$v4" == "null" || -z "$v4" ]]; then echo -e "${RED}注册失败。${PLAIN}"; return 1; fi
     local reserved_json=$(python3 -c "import base64, json; decoded = base64.b64decode('$client_id'); print(json.dumps([x for x in decoded[0:3]]))" 2>/dev/null)
+    
+    save_credentials "$priv_key" "$peer_pub" "$v4" "$v6" "$reserved_json"
     write_warp_config "$priv_key" "$peer_pub" "$v4" "$v6" "$reserved_json"
 }
 
 manual_warp() {
+    # 尝试读取上次保存的凭证
+    local def_priv=""
+    local def_pub=""
+    local def_v4=""
+    local def_v6=""
+    local def_res=""
+    
+    if [[ -f "$CRED_FILE" ]]; then
+        source "$CRED_FILE"
+        def_priv="$PRIV_KEY"
+        def_pub="$PUB_KEY"
+        def_v4="$V4_ADDR"
+        def_v6="$V6_ADDR"
+        def_res="$RESERVED"
+        echo -e "${SKYBLUE}检测到历史凭证，回车可直接使用默认值。${PLAIN}"
+    fi
+
     echo -e "${GREEN}手动录入 WARP 信息${PLAIN}"
-    read -p "私钥 (Private Key): " priv_key
+    
+    read -p "私钥 (Private Key) [默认: ${def_priv:0:10}...]: " priv_key
+    [[ -z "$priv_key" ]] && priv_key="$def_priv"
     if [[ -z "$priv_key" ]]; then echo -e "${RED}私钥不能为空${PLAIN}"; return; fi
     
-    read -p "公钥 (Peer Public Key, 默认回车): " peer_pub
+    read -p "公钥 (Peer Public Key) [默认: 官方Key]: " peer_pub
     [[ -z "$peer_pub" ]] && peer_pub="bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
     
-    # IPv4 默认值
-    read -p "本机 IPv4 (默认 172.16.0.2/32): " v4
+    read -p "本机 IPv4 [默认: 172.16.0.2/32]: " v4
     [[ -z "$v4" ]] && v4="172.16.0.2/32"
     
-    # IPv6 提示
     echo -e "${YELLOW}提示: IPv6 地址必须以 /128 结尾${PLAIN}"
-    read -p "本机 IPv6 (如 2606:4700:.../128): " v6
+    local show_v6=""
+    [[ -n "$def_v6" ]] && show_v6=" [默认: ${def_v6}]"
+    read -p "本机 IPv6${show_v6}: " v6
+    [[ -z "$v6" ]] && v6="$def_v6"
     
-    echo -e "Reserved (示例: [0, 0, 0] 或 c+kIBA==)"
+    local show_res=""
+    [[ -n "$def_res" ]] && show_res=" [默认: ${def_res}]"
+    echo -e "Reserved (示例: [0, 0, 0] 或 c+kIBA==)${show_res}"
     read -p "请输入: " res_input
     
     local reserved_json=""
-    if [[ "$res_input" =~ [0-9] ]]; then
-        local clean_res=$(clean_reserved "$res_input")
-        [[ -n "$clean_res" ]] && reserved_json="$clean_res"
-    fi
-    if [[ -z "$reserved_json" ]]; then
-        reserved_json=$(base64_to_reserved_shell "$res_input")
-        if [[ -z "$reserved_json" ]]; then
-             ensure_python
-             reserved_json=$(python3 -c "import base64, json; decoded = base64.b64decode('$res_input'); print(json.dumps([x for x in decoded]))" 2>/dev/null)
+    if [[ -z "$res_input" && -n "$def_res" ]]; then
+        reserved_json="$def_res"
+    else
+        if [[ "$res_input" =~ [0-9] ]]; then
+            local clean_res=$(clean_reserved "$res_input")
+            [[ -n "$clean_res" ]] && reserved_json="$clean_res"
         fi
+        if [[ -z "$reserved_json" ]]; then
+            reserved_json=$(base64_to_reserved_shell "$res_input")
+            if [[ -z "$reserved_json" ]]; then
+                 ensure_python
+                 reserved_json=$(python3 -c "import base64, json; decoded = base64.b64decode('$res_input'); print(json.dumps([x for x in decoded]))" 2>/dev/null)
+            fi
+        fi
+        [[ -z "$reserved_json" || "$reserved_json" == "[]" ]] && reserved_json="[0,0,0]"
     fi
-    [[ -z "$reserved_json" || "$reserved_json" == "[]" ]] && reserved_json="[0,0,0]"
     
+    save_credentials "$priv_key" "$peer_pub" "$v4" "$v6" "$reserved_json"
     write_warp_config "$priv_key" "$peer_pub" "$v4" "$v6" "$reserved_json"
 }
 
@@ -157,10 +201,7 @@ write_warp_config() {
     if [[ -n "$v4" && "$v4" != "null" ]]; then addr_json=$(echo "$addr_json" | jq --arg ip "$v4" '. + [$ip]'); fi
     if [[ -n "$v6" && "$v6" != "null" ]]; then addr_json=$(echo "$addr_json" | jq --arg ip "$v6" '. + [$ip]'); fi
     
-    # === 核心重构: Endpoint 结构 + allowed_ips ===
-    # 1. system: false 避免创建物理网卡冲突
-    # 2. address / port 标准新字段
-    # 3. allowed_ips: ["0.0.0.0/0", "::/0"] (必填修复)
+    # Endpoints 结构 (v6.1+)
     local warp_json=$(jq -n \
         --arg priv "$priv" \
         --arg pub "$pub" \
@@ -189,17 +230,11 @@ write_warp_config() {
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
     local TMP_CONF=$(mktemp)
     
-    # 1. 确保 endpoints 数组存在
     jq 'if .endpoints == null then .endpoints = [] else . end' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
-
-    # 2. 强力清理旧数据 (Outbounds & Endpoints)
     jq 'del(.outbounds[] | select(.tag == "WARP" or .tag == "warp" or .tag == "warp-out"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq 'del(.endpoints[] | select(.tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
-
-    # 3. 写入新的 WARP Endpoint
     jq --argjson new "$warp_json" '.endpoints += [$new]' "$CONFIG_FILE" > "$TMP_CONF"
     
-    # 4. 修复文件移动逻辑 (move 之后不需要 rm)
     if [[ $? -eq 0 && -s "$TMP_CONF" ]]; then
         mv "$TMP_CONF" "$CONFIG_FILE"
         echo -e "${GREEN}WARP Endpoint 配置完成。${PLAIN}"
@@ -211,8 +246,35 @@ write_warp_config() {
 }
 
 # ==========================================
-# 3. 路由管理
+# 3. 路由管理 (带前置检查)
 # ==========================================
+
+# 关键修复：检查是否存在 WARP 节点
+ensure_warp_exists() {
+    # 检查 endpoints 中是否有 WARP
+    if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then 
+        return 0
+    fi
+    # 兼容性检查 outbounds
+    if jq -e '.outbounds[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then 
+        return 0 
+    fi
+    
+    echo -e "${RED}错误：未检测到 WARP 节点配置！${PLAIN}"
+    echo -e "${YELLOW}请先执行 [1. 注册/配置 WARP 凭证] 添加节点，再设置分流规则。${PLAIN}"
+    
+    # 尝试自动恢复
+    if [[ -f "$CRED_FILE" ]]; then
+        echo -e "检测到历史凭证备份，是否自动恢复？[y/n]"
+        read -p "选择: " recover
+        if [[ "$recover" == "y" ]]; then
+            source "$CRED_FILE"
+            write_warp_config "$PRIV_KEY" "$PUB_KEY" "$V4_ADDR" "$V6_ADDR" "$RESERVED"
+            return 0
+        fi
+    fi
+    return 1
+}
 
 apply_routing_rule() {
     local rule_json="$1"
@@ -229,6 +291,7 @@ apply_routing_rule() {
 }
 
 mode_stream() {
+    ensure_warp_exists || return
     echo -e "请选择: 1. ${GREEN}域名列表${PLAIN} (推荐)  2. ${YELLOW}Geosite${PLAIN}"
     read -p "选择: " mode
     local rule=""
@@ -241,6 +304,7 @@ mode_stream() {
 }
 
 mode_global() {
+    ensure_warp_exists || return
     echo -e " a. 仅 IPv4  b. 仅 IPv6  c. 双栈全局"
     read -p "选择: " sub
     local rule=""
@@ -253,6 +317,7 @@ mode_global() {
 }
 
 mode_specific_node() {
+    ensure_warp_exists || return
     if [[ ! -f "$CONFIG_FILE" ]]; then echo -e "${RED}无配置文件${PLAIN}"; return; fi
     echo -e "${SKYBLUE}正在读取 Sing-box 入站节点...${PLAIN}"
     local node_list=$(jq -r '.inbounds[] | "\(.tag) | \(.type) | \(.listen_port // .listen // "N/A")"' "$CONFIG_FILE" | nl -w 2 -s " ")
@@ -274,15 +339,13 @@ mode_specific_node() {
 }
 
 uninstall_warp() {
-    echo -e "${YELLOW}正在卸载 WARP...${PLAIN}"
+    echo -e "${YELLOW}正在卸载 WARP (节点配置 + 路由规则)...${PLAIN}"
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak_uninstall"
     local TMP_CONF=$(mktemp)
-    # 清理 Outbounds
     jq 'del(.outbounds[] | select(.tag == "WARP" or .tag == "warp" or .tag == "warp-out"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
-    # 清理 Endpoints
     jq 'if .endpoints then del(.endpoints[] | select(.tag == "WARP")) else . end' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
-    # 清理路由
     jq 'del(.route.rules[] | select(.outbound == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
+    echo -e "${GREEN}卸载完成。凭证已保留在 $CRED_FILE (下次可自动恢复)${PLAIN}"
     restart_sb
 }
 
@@ -291,7 +354,6 @@ show_menu() {
     while true; do
         clear
         local status_text="${RED}未配置${PLAIN}"
-        # 检查 endpoints 和 outbounds (兼容显示)
         if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then 
             status_text="${GREEN}已配置 (Endpoint)${PLAIN}"
         elif jq -e '.outbounds[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
@@ -301,11 +363,11 @@ show_menu() {
         local ver=$(sing-box version 2>/dev/null | head -n1 | awk '{print $3}')
         
         echo -e "================ Native WARP 配置向导 (Sing-box) ================"
-        echo -e " 内核版本: ${SKYBLUE}${ver:-未知}${PLAIN} ${YELLOW}(v6.1 适配)${PLAIN}"
+        echo -e " 内核版本: ${SKYBLUE}${ver:-未知}${PLAIN} ${YELLOW}(v6.2 逻辑修复)${PLAIN}"
         echo -e " 配置文件: ${SKYBLUE}$CONFIG_FILE${PLAIN}"
         echo -e " 凭证状态: [$status_text]"
         echo -e "----------------------------------------------------"
-        echo -e " 1. 注册/配置 WARP 凭证 (自动获取 或 手动输入)"
+        echo -e " 1. 注册/配置 WARP 凭证 ${YELLOW}(卸载后需先点此恢复)${PLAIN}"
         echo -e " 2. 查看当前凭证信息"
         echo -e "----------------------------------------------------"
         echo -e " 3. ${SKYBLUE}模式一：智能流媒体分流 (推荐)${PLAIN}"
@@ -321,7 +383,7 @@ show_menu() {
                 echo -e "  1. 自动注册 (需 Python)"; echo -e "  2. 手动录入 (Base64/CSV)"
                 read -p "  请选择: " reg_type
                 if [[ "$reg_type" == "1" ]]; then register_warp; else manual_warp; fi; read -p "按回车继续..." ;;
-            2) echo -e "请直接查看 config.json。"; read -p "按回车继续..." ;;
+            2) echo -e "凭证文件: $CRED_FILE"; cat "$CRED_FILE" 2>/dev/null; read -p "按回车继续..." ;;
             3) mode_stream; read -p "按回车继续..." ;;
             4) mode_global; read -p "按回车继续..." ;;
             5) mode_specific_node; read -p "按回车继续..." ;;
