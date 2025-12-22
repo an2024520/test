@@ -82,12 +82,55 @@ NODE_JSON=$(jq -n \
 tmp_add=$(mktemp)
 jq --argjson new "$NODE_JSON" 'if .inbounds == null then .inbounds = [] else . end | .inbounds += [$new]' "$CONFIG_FILE" > "$tmp_add" && mv "$tmp_add" "$CONFIG_FILE"
 
-# 6. 重启
+# 6. 重启服务
 systemctl restart sing-box
 sleep 1
+
 if systemctl is-active --quiet sing-box; then
     echo -e "${GREEN}配置写入成功！${PLAIN} Tag: ${NODE_TAG}"
-    echo -e "${YELLOW}可以使用菜单 [5. 查看节点] 获取链接。${PLAIN}"
+    echo -e "------------------------------------------------------"
+
+    # --- 隧道域名探测与补全逻辑 ---
+    
+    # A. 尝试从日志中自动抓取 TryCloudflare 临时隧道域名
+    ARGO_DOMAIN=$(journalctl -u cloudflared --no-pager 2>/dev/null | grep -o 'https://.*\.trycloudflare\.com' | tail -n 1 | sed 's/https:\/\///')
+
+    # B. 如果抓取不到，提示用户手动输入（兼容固定域名隧道）
+    if [[ -z "$ARGO_DOMAIN" ]]; then
+        echo -e "${YELLOW}提示：未探测到正在运行的临时隧道域名。${PLAIN}"
+        read -p "请输入您的 Cloudflare Tunnel 域名 (直接回车跳过链接生成): " MANUAL_DOMAIN
+        ARGO_DOMAIN=$MANUAL_DOMAIN
+    fi
+
+    # C. 生成并输出节点信息
+    if [[ -n "$ARGO_DOMAIN" ]]; then
+        echo -e "${GREEN}检测到隧道域名: ${ARGO_DOMAIN}${PLAIN}"
+        
+        # 构造 VLESS 分享链接 (针对 Tunnel 场景优化：443端口 + TLS开启 + 加密none)
+        # 备注：Sing-box 做后端时，CF 隧道前端是 TLS 443，所以这里直接补全
+        SHARE_LINK="vless://${UUID}@${ARGO_DOMAIN}:443?encryption=none&security=tls&type=ws&host=${ARGO_DOMAIN}&path=${WS_PATH}&sni=${ARGO_DOMAIN}#SB-Tunnel-${PORT}"
+        
+        echo -e ""
+        echo -e "${BLUE}========= Cloudflare Tunnel 专用配置 =========${PLAIN}"
+        echo -e "${SKYBLUE}地址 (Address):${PLAIN} ${ARGO_DOMAIN}"
+        echo -e "${SKYBLUE}端口 (Port):${PLAIN} 443"
+        echo -e "${SKYBLUE}用户 ID (UUID):${PLAIN} ${UUID}"
+        echo -e "${SKYBLUE}传输协议 (Network):${PLAIN} ws"
+        echo -e "${SKYBLUE}伪装域名 (Host):${PLAIN} ${ARGO_DOMAIN}"
+        echo -e "${SKYBLUE}路径 (Path):${PLAIN} ${WS_PATH}"
+        echo -e "${SKYBLUE}TLS (Security):${PLAIN} tls"
+        echo -e "${SKYBLUE}VLESS 加密:${PLAIN} none"
+        echo -e "------------------------------------------------------"
+        echo -e "${GREEN}分享链接 (直接导入客户端):${PLAIN}"
+        echo -e "${YELLOW}${SHARE_LINK}${PLAIN}"
+        echo -e "------------------------------------------------------"
+    else
+        echo -e "${YELLOW}未配置域名，请手动在客户端补全 Tunnel 域名信息。${PLAIN}"
+        echo -e "本地监听端口: ${PORT}"
+        echo -e "UUID: ${UUID}"
+        echo -e "WS 路径: ${WS_PATH}"
+    fi
+
 else
-    echo -e "${RED}启动失败。${PLAIN}"
+    echo -e "${RED}Sing-box 启动失败，请检查配置文件格式。${PLAIN}"
 fi
