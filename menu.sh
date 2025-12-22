@@ -50,7 +50,7 @@ FILE_SB_DEL="sb_module_node_del.sh"
 FILE_HY2="hy2.sh"
 
 # --- 系统工具 ---
-FILE_BOOST="xray_module_boost.sh"
+FILE_BOOST="sys_tools.sh"
 FILE_CF_TUNNEL="install_cf_tunnel_debian.sh"
 FILE_FIX_IPV6="fix_ipv6_dual_core.sh"
 
