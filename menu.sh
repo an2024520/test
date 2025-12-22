@@ -145,7 +145,7 @@ check_dir_clean() {
 init_urls() {
     echo -e "${YELLOW}正在同步最新脚本列表...${PLAIN}"
     # 时间戳缓存刷新
-    wget -T 5 -qO "$LOCAL_LIST_FILE" "${URL_LIST_FILE}?t=$(date +%s)"
+    wget -T 20 -t 3 -qO "$LOCAL_LIST_FILE" "${URL_LIST_FILE}?t=$(date +%s)"
     if [[ $? -ne 0 ]]; then
         if [[ -f "$LOCAL_LIST_FILE" ]]; then 
             echo -e "${YELLOW}网络异常，使用本地缓存列表。${PLAIN}"
