@@ -1,11 +1,12 @@
 #!/bin/bash
 
 # ============================================================
-# 脚本名称：fix_ipv6_dual_core.sh (v2.0 增强版)
+# 脚本名称：fix_ipv6_dual_core.sh (v2.1 DNS Fix)
 # 作用：
-#   1. [网络] 强制 WARP 使用物理 IPv6 Endpoint (绕过 NAT64/DNS64)
-#   2. [启动] 修复 Sing-box 配置文件缺失 IP 掩码 (/32, /128) 的 Bug
-#   3. [权限] 自动修复日志目录权限，防止启动失败
+#   1. [网络] 强制 WARP 使用物理 IPv6 Endpoint
+#   2. [启动] 修复 Sing-box 缺失掩码 (/32, /128)
+#   3. [适配] 适配 Sing-box 1.12+ 新版 DNS 格式 (移除 port 字段)
+#   4. [权限] 修复日志目录权限
 # ============================================================
 
 RED='\033[0;31m'
@@ -45,11 +46,11 @@ fix_file() {
         is_singbox=1
         
         # Sing-box 步骤1: 修改 Endpoint 为物理 IPv6
+        # 关键修改：DNS 格式适配新版，移除 "port": 53，改为 "address": "2001:4860:4860::8888"
         jq '
             (.outbounds[]? | select(.type == "wireguard" or .tag == "warp-out") | .peers[0].server) |= "2606:4700:d0::a29f:c001" |
             (.outbounds[]? | select(.type == "wireguard" or .tag == "warp-out") | .peers[0].server_port) |= 2408 |
-            .dns.servers |= [{ "address": "2001:4860:4860::8888", "port": 53 }] |
-            .dns.strategy |= "prefer_ipv6"
+            .dns.servers |= [{ "address": "2001:4860:4860::8888", "strategy": "prefer_ipv6" }]
         ' "$file" > "$tmp"
     fi
 
@@ -62,13 +63,12 @@ fix_file() {
         return
     fi
     
-    # 2.3 [新增关键修复] Sing-box 掩码暴力补全
-    # 只有 Sing-box 需要严格的 /32 和 /128 掩码
+    # 2.3 Sing-box 掩码暴力补全
     if [[ "$is_singbox" -eq 1 ]]; then
         echo -e "  - 执行掩码补全 (/32, /128)..."
         # 补全 IPv4 /32
         sed -i -E 's/("address": "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)"/\1\/32"/g' "$file"
-        # 补全 IPv6 /128 (匹配 2606 开头的 Cloudflare 段或常见 IPv6)
+        # 补全 IPv6 /128
         sed -i -E 's/("address": "([0-9a-fA-F]{1,4}:){2,}[0-9a-fA-F]{1,4})"(,?)/\1\/128"\3/g' "$file"
         
         # 修复日志权限
