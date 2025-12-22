@@ -56,7 +56,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then mkdir -p "$CONFIG_DIR"; echo '{"inbounds":[],
 tmp_clean=$(mktemp)
 jq --argjson port "$PORT" 'del(.inbounds[]? | select(.listen_port == $port))' "$CONFIG_FILE" > "$tmp_clean" && mv "$tmp_clean" "$CONFIG_FILE"
 
-# B. 构造 Inbound JSON (无 TLS)
+# B. 构造 Inbound JSON (显式增加字段)
 NODE_JSON=$(jq -n \
     --arg port "$PORT" \
     --arg tag "$NODE_TAG" \
@@ -67,8 +67,15 @@ NODE_JSON=$(jq -n \
         "tag": $tag,
         "listen": "::",
         "listen_port": ($port | tonumber),
-        "users": [{ "uuid": $uuid }],
-        "transport": { "type": "ws", "path": $path }
+        "users": [{ 
+            "uuid": $uuid 
+        }],
+        "transport": { 
+            "type": "ws", 
+            "path": $path,
+            "max_early_data": 0,
+            "early_data_header_name": "Sec-WebSocket-Protocol"
+        }
     }')
 
 # C. 写入
