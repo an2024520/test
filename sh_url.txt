@@ -3,7 +3,7 @@ xray_core.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xr
 xray_vless_xhttp_reality.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_vless_xhttp_reality.sh
 xray_vless_vision_reality.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_vless_vision_reality.sh
 xray_module_attach_warp.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_module_attach_warp.sh
-xray_module_boost.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_module_boost.sh
+sys_tools.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/common/sys_tools.sh
 xray_module_detach_warp.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_module_detach_warp.sh
 xray_module_node_del.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_module_node_del.sh
 xray_get_node_details.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_get_node_details.sh
