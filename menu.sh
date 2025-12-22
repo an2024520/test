@@ -1,10 +1,11 @@
 #!/bin/bash
 
 # ============================================================
-#  全能协议管理中心 (Commander v3.9.8)
+#  全能协议管理中心 (Commander v3.9.8 - 排版还原版)
 #  - 修复说明: 
 #    1. 彻底隔离函数作用域，修复菜单点击失效问题
-#    2. 修正 check_ipv6_environment 的括号闭合逻辑
+#    2. 严格还原原始菜单排版与文字描述
+#    3. 保持 IPv6/NAT64 增强探测逻辑
 # ============================================================
 
 # 颜色定义
@@ -17,7 +18,7 @@ GRAY='\033[0;37m'
 BLUE='\033[0;34m'
 
 # ==========================================
-# 1. 核心配置与文件映射
+# 1. 核心配置与文件映射 (完整保持)
 # ==========================================
 URL_LIST_FILE="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/sh_url.txt"
 LOCAL_LIST_FILE="/tmp/sh_url.txt"
@@ -50,12 +51,13 @@ FILE_DETACH="xray_module_detach_warp.sh"
 FILE_BOOST="xray_module_boost.sh"
 
 # ==========================================
-# 2. 引擎函数
+# 2. 引擎函数 (核心修复区)
 # ==========================================
 
 check_ipv6_environment() {
     echo -e "${YELLOW}正在检测 IPv4 网络连通性 (针对高延迟环境)...${PLAIN}"
     
+    # 1. 针对高延迟环境探测
     if curl -4 -s --connect-timeout 10 https://1.1.1.1 >/dev/null 2>&1; then
         echo -e "${GREEN}检测到 IPv4 连接正常。${PLAIN}"
         return
@@ -75,10 +77,12 @@ check_ipv6_environment() {
 
     if [[ "$fix_choice" == "y" ]]; then
         echo -e "${YELLOW}正在配置 NAT64/DNS64...${PLAIN}"
+        # 预先修复权限
         mkdir -p /var/log/sing-box/ && chmod 777 /var/log/sing-box/ >/dev/null 2>&1
         chattr -i /etc/resolv.conf >/dev/null 2>&1
         if [ ! -f "/etc/resolv.conf.bak.nat64" ]; then
             cp /etc/resolv.conf /etc/resolv.conf.bak.nat64
+            echo -e "${GREEN}已备份原 DNS${PLAIN}"
         fi
         rm -f /etc/resolv.conf
         echo -e "nameserver 2a09:c500::1\nnameserver 2001:67c:2b0::4" > /etc/resolv.conf
@@ -87,26 +91,34 @@ check_ipv6_environment() {
     else
         echo -e "${GRAY}已跳过。${PLAIN}"
     fi
-} # 此处正确闭合 check_ipv6_environment
+}
 
+# 其他辅助函数维持现状
 check_dir_clean() {
     local current_script=$(basename "$0")
     local file_count=$(ls -1 | grep -v "^$current_script$" | wc -l)
     if [[ "$file_count" -gt 0 ]]; then
         echo -e "${YELLOW}======================================================${PLAIN}"
         echo -e "${YELLOW} 检测到当前目录存在 $file_count 个历史文件。${PLAIN}"
-        read -p "是否清空当前目录? (y/n, 默认 n): " clean_opt
+        echo -e "为了确保脚本运行在最新状态，建议在【空文件夹】下运行。"
+        echo -e ""
+        read -p "是否清空当前目录并强制更新所有组件? (y/n, 默认 n): " clean_opt
         if [[ "$clean_opt" == "y" ]]; then
             ls | grep -v "^$current_script$" | xargs rm -rf
+            echo -e "${GREEN}清理完成，即将下载最新组件。${PLAIN}"; sleep 1
         fi
+        echo -e ""
     fi
 }
 
 init_urls() {
     echo -e "${YELLOW}正在同步最新脚本列表...${PLAIN}"
     wget -T 20 -t 3 -qO "$LOCAL_LIST_FILE" "${URL_LIST_FILE}?t=$(date +%s)"
-    [[ $? -ne 0 ]] && [[ ! -f "$LOCAL_LIST_FILE" ]] && echo -e "${RED}无法获取脚本列表${PLAIN}" && exit 1
-    echo -e "${GREEN}同步完成。${PLAIN}"
+    if [[ $? -ne 0 ]]; then
+        [[ -f "$LOCAL_LIST_FILE" ]] && echo -e "${YELLOW}网络异常，使用本地缓存列表。${PLAIN}" || { echo -e "${RED}致命错误: 无法获取脚本列表。${PLAIN}"; exit 1; }
+    else
+        echo -e "${GREEN}同步完成。${PLAIN}"
+    fi
 }
 
 get_url_by_name() {
@@ -117,32 +129,40 @@ check_run() {
     local script_name="$1"
     local no_pause="$2"
     if [[ ! -f "$script_name" ]]; then
+        echo -e "${YELLOW}正在获取组件 [$script_name] ...${PLAIN}"
         local script_url=$(get_url_by_name "$script_name")
-        [[ -z "$script_url" ]] && echo -e "${RED}未找到记录: $script_name${PLAIN}" && return
+        [[ -z "$script_url" ]] && { echo -e "${RED}错误: sh_url.txt 中未找到该文件记录。${PLAIN}"; read -p "按回车继续..."; return; }
         mkdir -p "$(dirname "$script_name")"
         wget -qO "$script_name" "${script_url}?t=$(date +%s)"
+        [[ $? -ne 0 ]] && { echo -e "${RED}下载失败。${PLAIN}"; read -p "按回车继续..."; return; }
         chmod +x "$script_name"
+        echo -e "${GREEN}获取成功。${PLAIN}"
     fi
     ./"$script_name"
-    [[ "$no_pause" != "true" ]] && read -p "操作结束，按回车键继续..."
+    [[ "$no_pause" != "true" ]] && { echo -e ""; read -p "操作结束，按回车键继续..."; }
 }
 
 # ==========================================
-# 3. 菜单逻辑
+# 3. 子菜单逻辑 (还原排版)
 # ==========================================
 
 menu_singbox_env() {
     while true; do
         clear
         echo -e "${BLUE}============= Sing-box 核心环境管理 =============${PLAIN}"
-        echo -e " 1. 安装/重置 Sing-box"
-        echo -e " 2. 卸载 Sing-box"
-        echo -e " 0. 返回"
-        read -p "选择: " choice
-        case "$choice" in
+        echo -e " ${SKYBLUE}1.${PLAIN} 安装/重置 Sing-box 核心 (最新正式版)"
+        echo -e " ${SKYBLUE}2.${PLAIN} ${RED}彻底卸载 Sing-box 服务${PLAIN}"
+        echo -e " ----------------------------------------------"
+        echo -e " ${GRAY}0. 返回上一级${PLAIN}"
+        echo -e " ${GRAY}99. 返回总菜单${PLAIN}"
+        echo -e ""
+        read -p "请选择: " sb_choice
+        case "$sb_choice" in
             1) check_run "$FILE_SB_CORE" ;;
             2) check_run "$FILE_SB_UNINSTALL" ;;
             0) return ;;
+            99) show_main_menu ;;
+            *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
     done
 }
@@ -151,9 +171,17 @@ menu_nodes_xray() {
     while true; do
         clear
         echo -e "${BLUE}============= Xray 节点配置管理 =============${PLAIN}"
-        echo -e " 1. VLESS-XHTTP | 2. VLESS-Vision | 3. VLESS-WS | 4. Tunnel"
-        echo -e " 5. 查看信息 | 6. 删除节点 | 0. 返回"
-        read -p "选择: " choice
+        echo -e " ${SKYBLUE}1.${PLAIN} 新增: VLESS-XHTTP (Reality - 穿透强)"
+        echo -e " ${SKYBLUE}2.${PLAIN} 新增: VLESS-Vision (Reality - 极稳定)"
+        echo -e " ${SKYBLUE}3.${PLAIN} 新增: VLESS-WS-TLS (CDN / Nginx前置)"
+        echo -e " ${SKYBLUE}4.${PLAIN} 新增: VLESS-WS-Tunnel (Tunnel穿透专用)"
+        echo -e " ${SKYBLUE}5.${PLAIN} 查看: 当前节点链接 / 分享信息"
+        echo -e " ${SKYBLUE}6.${PLAIN} ${RED}删除: 删除指定节点 / 清空配置${PLAIN}"
+        echo -e " ----------------------------------------------"
+        echo -e " ${GRAY}0. 返回上一级${PLAIN}"
+        echo -e " ${GRAY}99. 返回总菜单${PLAIN}"
+        echo -e ""
+        read -p "请选择: " choice
         case "$choice" in
             1) check_run "$FILE_ADD_XHTTP" ;;
             2) check_run "$FILE_ADD_VISION" ;;
@@ -162,6 +190,8 @@ menu_nodes_xray() {
             5) check_run "$FILE_NODE_INFO" ;;
             6) check_run "$FILE_NODE_DEL" ;;
             0) return ;;
+            99) show_main_menu ;;
+            *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
     done
 }
@@ -170,9 +200,20 @@ menu_nodes_sb() {
     while true; do
         clear
         echo -e "${BLUE}============= Sing-box 节点配置管理 =============${PLAIN}"
-        echo -e " 1. AnyTLS | 2. Vision | 3. WS | 4. Tunnel | 5. Hy2(Self) | 6. Hy2(ACME)"
-        echo -e " 7. 查看信息 | 8. 删除节点 | 0. 返回"
-        read -p "选择: " choice
+        echo -e " ${SKYBLUE}1.${PLAIN} 新增: AnyTLS-Reality (Sing-box 专属 / 极度拟态)"
+        echo -e " ${SKYBLUE}2.${PLAIN} 新增: VLESS-Vision-Reality (极稳定 - 推荐)"
+        echo -e " ${SKYBLUE}3.${PLAIN} 新增: VLESS-WS-TLS (CDN / Nginx前置)"
+        echo -e " ${SKYBLUE}4.${PLAIN} 新增: VLESS-WS-Tunnel (Tunnel穿透专用)"
+        echo -e " ${SKYBLUE}5.${PLAIN} 新增: Hysteria2 (自签证书 - 极速/跳过验证)"
+        echo -e " ${SKYBLUE}6.${PLAIN} 新增: Hysteria2 (ACME证书 - 推荐/标准HTTPS)"
+        echo -e " ----------------------------------------------"
+        echo -e " ${SKYBLUE}7.${PLAIN} 查看: 当前节点链接 / 分享信息"
+        echo -e " ${SKYBLUE}8.${PLAIN} ${RED}删除: 删除指定节点 / 清空配置${PLAIN}"
+        echo -e " ----------------------------------------------"
+        echo -e " ${GRAY}0. 返回上一级${PLAIN}"
+        echo -e " ${GRAY}99. 返回总菜单${PLAIN}"
+        echo -e ""
+        read -p "请选择: " choice
         case "$choice" in
             1) check_run "$FILE_SB_ADD_ANYTLS" ;;
             2) check_run "$FILE_SB_ADD_VISION" ;;
@@ -183,22 +224,30 @@ menu_nodes_sb() {
             7) check_run "$FILE_SB_INFO" ;;
             8) check_run "$FILE_SB_DEL" ;;
             0) return ;;
+            99) show_main_menu ;;
+            *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
     done
 }
 
-menu_routing() {
+menu_routing_sb() {
     while true; do
         clear
-        echo -e "${BLUE}============= 路由管理 =============${PLAIN}"
-        echo -e " 1. Xray Native WARP"
-        echo -e " 2. Sing-box Native WARP"
-        echo -e " 0. 返回"
-        read -p "选择: " choice
-        case "$choice" in
-            1) check_run "$FILE_NATIVE_WARP" "true" ;;
-            2) check_run "$FILE_SB_NATIVE_WARP" "true" ;;
+        echo -e "${BLUE}============= Sing-box 核心路由管理 =============${PLAIN}"
+        echo -e " ${GREEN}1.${PLAIN} Native WARP (原生 WireGuard 模式 - 推荐)"
+        echo -e "    ${GRAY}- 自动注册账号，支持 ChatGPT/Netflix 分流${PLAIN}"
+        echo -e " ${GREEN}2.${PLAIN} Wireproxy WARP (Socks5 模式 - 待开发)"
+        echo -e " ----------------------------------------------"
+        echo -e " ${GRAY}0. 返回上一级${PLAIN}"
+        echo -e " ${GRAY}99. 返回总菜单${PLAIN}"
+        echo -e ""
+        read -p "请选择: " choice_sb_route
+        case $choice_sb_route in
+            1) check_run "$FILE_SB_NATIVE_WARP" "true" ;;
+            2) echo -e "${RED}功能开发中...${PLAIN}"; sleep 2 ;;
             0) return ;;
+            99) show_main_menu ;;
+            *) echo -e "${RED}无效选择${PLAIN}"; sleep 1 ;;
         esac
     done
 }
@@ -206,15 +255,28 @@ menu_routing() {
 menu_core() {
     while true; do
         clear
-        echo -e " 1. Xray核心 | 2. 卸载Xray | 3. SB核心 | 4. WireProxy | 5. CF Tunnel | 0. 返回"
-        read -p "选择: " choice
+        echo -e "${BLUE}============= 前置/核心管理 (Core) =============${PLAIN}"
+        echo -e " ${SKYBLUE}1.${PLAIN} 安装/重置 Xray 核心环境"
+        echo -e " ${SKYBLUE}2.${PLAIN} ${RED}彻底卸载 Xray 服务${PLAIN}"
+        echo -e " ----------------------------------------------"
+        echo -e " ${SKYBLUE}3.${PLAIN} Sing-box 核心环境管理"
+        echo -e " ----------------------------------------------"
+        echo -e " ${SKYBLUE}4.${PLAIN} WireProxy (Warp 出口代理服务)"
+        echo -e " ${SKYBLUE}5.${PLAIN} Cloudflare Tunnel (内网穿透)"
+        echo -e " ----------------------------------------------"
+        echo -e " ${GRAY}0. 返回上一级${PLAIN}"
+        echo -e " ${GRAY}99. 返回总菜单${PLAIN}"
+        echo -e ""
+        read -p "请选择: " choice
         case "$choice" in
             1) check_run "$FILE_XRAY_CORE" ;;
             2) check_run "$FILE_XRAY_UNINSTALL" ;;
             3) menu_singbox_env ;;
             4) check_run "$FILE_WIREPROXY" ;;
             5) check_run "$FILE_CF_TUNNEL" ;;
-            0) return ;;
+            0) break ;;
+            99) show_main_menu ;;
+            *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
     done
 }
@@ -222,20 +284,76 @@ menu_core() {
 menu_nodes() {
     while true; do
         clear
-        echo -e " 1. Xray节点 | 2. Sing-box节点 | 3. 独立Hy2 | 0. 返回"
-        read -p "选择: " choice
+        echo -e "${BLUE}============= 节点配置管理 (Nodes) =============${PLAIN}"
+        echo -e " ${SKYBLUE}1.${PLAIN} Xray 核心节点管理 ${YELLOW}(成熟稳定)${PLAIN}"
+        echo -e " ${SKYBLUE}2.${PLAIN} Sing-box 节点管理 ${YELLOW}(轻量高效)${PLAIN}"
+        echo -e " ----------------------------------------------"
+        echo -e " ${SKYBLUE}3.${PLAIN} 独立 Hysteria 2 节点管理"
+        echo -e " ----------------------------------------------"
+        echo -e " ${GRAY}0. 返回上一级${PLAIN}"
+        echo -e " ${GRAY}99. 返回总菜单${PLAIN}"
+        echo -e ""
+        read -p "请选择: " choice
         case "$choice" in
             1) menu_nodes_xray ;;
             2) menu_nodes_sb ;;
             3) check_run "$FILE_HY2" ;;
-            0) return ;;
+            0) break ;;
+            99) show_main_menu ;;
+            *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
+        esac
+    done
+}
+
+menu_routing() {
+    while true; do
+        clear
+        echo -e "${BLUE}============= 路由与分流规则 (Routing) =============${PLAIN}"
+        echo -e " [Xray 核心路由]"
+        echo -e " ${GREEN}1. Native WARP (原生模式 - 推荐)${PLAIN}"
+        echo -e "    ${GRAY}- 内核直连，支持 全局/分流/指定节点接管${PLAIN}"
+        echo -e ""
+        echo -e " ${YELLOW}2. Wireproxy WARP (传统挂载模式)${PLAIN}"
+        echo -e " ----------------------------------------------"
+        echo -e " [Sing-box 核心路由]"
+        echo -e " ${GREEN}3. Sing-box 路由管理 (WARP & 分流)${PLAIN}"
+        echo -e " ----------------------------------------------"
+        echo -e " ${GRAY}0. 返回上一级${PLAIN}"
+        echo -e " ${GRAY}99. 返回总菜单${PLAIN}"
+        echo -e ""
+        read -p "请选择: " choice
+        case "$choice" in
+            1) check_run "$FILE_NATIVE_WARP" "true" ;; 
+            2) 
+                while true; do
+                    clear
+                    echo -e "${YELLOW}>>> [传统模式] Wireproxy 挂载管理${PLAIN}"
+                    echo -e " 1. 挂载 WARP/Socks5 (解锁流媒体)"
+                    echo -e " 2. 解除 挂载 (恢复直连)"
+                    echo -e " 0. 返回"
+                    echo -e " 99. 返回总菜单"
+                    echo -e ""
+                    read -p "请选择: " sub_c
+                    case "$sub_c" in
+                        1) check_run "$FILE_ATTACH" ;;
+                        2) check_run "$FILE_DETACH" ;;
+                        0) break ;;
+                        99) show_main_menu ;;
+                    esac
+                done
+                ;;
+            3) menu_routing_sb ;;
+            0) break ;;
+            99) show_main_menu ;;
+            *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
     done
 }
 
 # ==========================================
-# 4. 主菜单入口 (已移出 check_ipv6 范围)
+# 4. 主程序入口
 # ==========================================
+
 show_main_menu() {
     while true; do
         clear
@@ -249,12 +367,13 @@ show_main_menu() {
         
         echo -e " 系统状态: [$STATUS_TEXT]"
         echo -e "--------------------------------------------"
-        echo -e " 1. 前置/核心管理 (Core)"
-        echo -e " 2. 节点配置管理 (Nodes)"
-        echo -e " 3. 路由规则管理 (Routing)"
-        echo -e " 4. 系统优化工具 (Boost)"
-        echo -e " 0. 退出脚本"
+        echo -e " ${SKYBLUE}1.${PLAIN} 前置/核心管理 (Core & Infrastructure)"
+        echo -e " ${SKYBLUE}2.${PLAIN} 节点配置管理 (Nodes)"
+        echo -e " ${SKYBLUE}3.${PLAIN} 路由规则管理 (Routing & WARP) ${YELLOW}★${PLAIN}"
+        echo -e " ${SKYBLUE}4.${PLAIN} 系统优化工具 (BBR/Cert/Logs)"
         echo -e "--------------------------------------------"
+        echo -e " ${GRAY}0. 退出脚本${PLAIN}"
+        echo -e ""
         read -p "请选择操作 [0-4]: " main_choice
 
         case "$main_choice" in
@@ -268,7 +387,7 @@ show_main_menu() {
     done
 }
 
-# 脚本启动
+# 脚本启动流程
 check_dir_clean
 check_ipv6_environment
 init_urls
