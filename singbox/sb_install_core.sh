@@ -1,9 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box 核心安装/重置脚本 (Universal)
+#  Sing-box 核心安装/重置脚本 (Universal + Auto)
 #  - 功能: 下载最新内核 / 配置 Systemd / 初始化配置
 #  - 架构: 自动适配 AMD64 / ARM64
+#  - 特性: 兼容 Commander 自动化防重复判断
 # ============================================================
 
 # 颜色定义
@@ -19,6 +20,25 @@ CONF_DIR="/usr/local/etc/sing-box"
 CONF_FILE="${CONF_DIR}/config.json"
 LOG_DIR="/var/log/sing-box"
 SERVICE_FILE="/etc/systemd/system/sing-box.service"
+
+# =================================================
+# [新增] 自动化模式 - 幂等性检查
+# =================================================
+# 如果在自动模式下，且核心文件已存在，则跳过安装
+if [[ "$AUTO_SETUP" == "true" ]] && [[ -f "$BIN_PATH" ]]; then
+    # 尝试获取版本号仅作显示
+    CURRENT_VER=$($BIN_PATH version 2>/dev/null | head -n 1 | awk '{print $3}')
+    echo -e "${GREEN}>>> [自动模式] 检测到 Sing-box (v${CURRENT_VER}) 已安装，跳过核心部署。${PLAIN}"
+    
+    # 确保服务是启动状态
+    systemctl daemon-reload
+    systemctl enable sing-box >/dev/null 2>&1
+    systemctl start sing-box >/dev/null 2>&1
+    
+    exit 0
+fi
+# =================================================
+
 
 # 1. 检查 root 权限
 if [[ $EUID -ne 0 ]]; then
