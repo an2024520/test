@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================
-#  Commander Auto-Deploy (v6.2 Final-Hint)
+#  Commander Auto-Deploy (v6.3 Tunnel-Integrated)
 #  - 核心特性: 超市选购模式 | 核心/WARP/Argo 模块化组装
-#  - 修正: 目录清理逻辑简化 (只保留自身)
-#  - 优化: WARP IPv6 输入增加格式示例提示
+#  - 新增: 支持 Sing-box VLESS+WS (Tunnel专用) 节点选购
+#  - 联动: 自动将 Argo 域名传递给节点生成分享链接
 # ============================================================
 
 # --- 基础定义 ---
@@ -21,9 +21,7 @@ LOCAL_LIST="/tmp/sh_url.txt"
 # ============================================================
 
 check_dir_clean() {
-    # 既然是一键脚本运行，为了环境纯净，除自身外全部清理
     local current_script=$(basename "$0")
-    # 排除自身
     local count=$(ls -1 | grep -v "^$current_script$" | wc -l)
     
     if [[ "$count" -gt 0 ]]; then
@@ -38,7 +36,6 @@ check_dir_clean() {
 
         if [[ "$clean_opt" == "y" ]]; then
             echo -e "${YELLOW}正在清理旧文件...${PLAIN}"
-            # 简单粗暴：排除脚本自身，其余全删
             ls | grep -v "^$current_script$" | xargs rm -rf
             echo -e "${GREEN}清理完成。${PLAIN}"; sleep 1
         fi
@@ -82,16 +79,29 @@ deploy_logic() {
         echo -e "${GREEN}>>> [Sing-box] 部署核心...${PLAIN}"
         run "sb_install_core.sh"
         
+        # A. Vision Reality (直连)
         if [[ "$DEPLOY_SB_VISION" == "true" ]]; then
             echo -e "${GREEN}>>> [SB] Vision 节点 (: ${VAR_SB_VISION_PORT})...${PLAIN}"
             PORT=$VAR_SB_VISION_PORT run "sb_vless_vision_reality.sh"
             SB_TAGS_ACC+="Vision-${VAR_SB_VISION_PORT},"
         fi
         
+        # B. WS TLS (直连)
         if [[ "$DEPLOY_SB_WS" == "true" ]]; then
-             echo -e "${GREEN}>>> [SB] WS 节点 (: ${VAR_SB_WS_PORT})...${PLAIN}"
+             echo -e "${GREEN}>>> [SB] WS TLS 节点 (: ${VAR_SB_WS_PORT})...${PLAIN}"
              PORT=$VAR_SB_WS_PORT run "sb_vless_ws_tls.sh"
              SB_TAGS_ACC+="WS-${VAR_SB_WS_PORT},"
+        fi
+
+        # C. WS Tunnel (隧道专用) - [新增]
+        if [[ "$DEPLOY_SB_WS_TUNNEL" == "true" ]]; then
+             echo -e "${GREEN}>>> [SB] WS Tunnel 节点 (: ${VAR_SB_WS_TUNNEL_PORT})...${PLAIN}"
+             # 导出特定变量给子脚本
+             export SB_WS_PORT="$VAR_SB_WS_TUNNEL_PORT"
+             export SB_WS_PATH="$VAR_SB_WS_TUNNEL_PATH"
+             # 此时 ARGO_DOMAIN 应该已经在下文中被 Argo 模块定义或预设
+             run "sb_vless_ws_tunnel.sh"
+             SB_TAGS_ACC+="Tunnel-${VAR_SB_WS_TUNNEL_PORT},"
         fi
     fi
 
@@ -127,6 +137,7 @@ deploy_logic() {
     # === 4. Argo ===
     if [[ "$INSTALL_ARGO" == "true" ]]; then
         echo -e "${GREEN}>>> [Argo] 配置 Tunnel...${PLAIN}"
+        # 注意: 如果选了 Tunnel 节点但没填 Argo Token, 安装脚本会报错或交互
         run "install_cf_tunnel_debian.sh"
     fi
 
@@ -153,8 +164,9 @@ show_dashboard() {
     # 1. 核心与节点
     if [[ "$INSTALL_SB" == "true" ]]; then
         echo -e "${YELLOW}● Sing-box Core${PLAIN}"
-        [[ "$DEPLOY_SB_VISION" == "true" ]] && echo -e "  ├─ Vision Reality  [Port: ${GREEN}$VAR_SB_VISION_PORT${PLAIN}]"
-        [[ "$DEPLOY_SB_WS" == "true" ]]     && echo -e "  └─ VLESS WS TLS    [Port: ${GREEN}$VAR_SB_WS_PORT${PLAIN}]"
+        [[ "$DEPLOY_SB_VISION" == "true" ]]     && echo -e "  ├─ Vision Reality  [Port: ${GREEN}$VAR_SB_VISION_PORT${PLAIN}]"
+        [[ "$DEPLOY_SB_WS" == "true" ]]         && echo -e "  ├─ VLESS WS TLS    [Port: ${GREEN}$VAR_SB_WS_PORT${PLAIN}]"
+        [[ "$DEPLOY_SB_WS_TUNNEL" == "true" ]]  && echo -e "  └─ VLESS WS Tunnel [Port: ${GREEN}$VAR_SB_WS_TUNNEL_PORT${PLAIN}] Path: ${SKYBLUE}$VAR_SB_WS_TUNNEL_PATH${PLAIN}"
         has_item=true
     fi
     
@@ -200,8 +212,9 @@ show_dashboard() {
 menu_protocols() {
     while true; do
         clear; echo -e "${SKYBLUE}=== 协议选择 ===${PLAIN}"
-        echo -e " 1. [$(get_status $DEPLOY_SB_VISION)] Sing-box Vision"
-        echo -e " 2. [$(get_status $DEPLOY_XRAY_VISION)] Xray Vision"
+        echo -e " 1. [$(get_status $DEPLOY_SB_VISION)] Sing-box Vision Reality (直连)"
+        echo -e " 2. [$(get_status $DEPLOY_XRAY_VISION)] Xray Vision Reality (直连)"
+        echo -e " 3. [$(get_status $DEPLOY_SB_WS_TUNNEL)] Sing-box VLESS+WS (Tunnel专用)"
         echo ""
         echo -e " 0. 返回"
         read -p "选择: " c
@@ -219,6 +232,22 @@ menu_protocols() {
                 else 
                     DEPLOY_XRAY_VISION=true; INSTALL_XRAY=true
                     read -p "端口(1443): " p; VAR_XRAY_VISION_PORT="${p:-1443}"
+                fi ;;
+            3)
+                if [[ "$DEPLOY_SB_WS_TUNNEL" == "true" ]]; then
+                    DEPLOY_SB_WS_TUNNEL=false
+                else
+                    DEPLOY_SB_WS_TUNNEL=true; INSTALL_SB=true
+                    read -p "监听端口(8080): " p; VAR_SB_WS_TUNNEL_PORT="${p:-8080}"
+                    read -p "WS路径(/ws): " pa; VAR_SB_WS_TUNNEL_PATH="${pa:-/ws}"
+                    
+                    # 联动提示: 建议开启 Argo
+                    if [[ "$INSTALL_ARGO" != "true" ]]; then
+                        echo -e "${YELLOW}提示: 该节点通常配合 Argo Tunnel 使用，已自动为您加入 Argo。${PLAIN}"
+                        INSTALL_ARGO=true
+                        read -p "请输入 Argo Token: " t; export ARGO_AUTH="$t"
+                        read -p "请输入 Argo 域名: " d; export ARGO_DOMAIN="$d"
+                    fi
                 fi ;;
             0) break ;;
         esac
@@ -241,14 +270,18 @@ menu_warp() {
         case $w in
             1)
                 INSTALL_WARP=true
-                [[ -z "$WARP_MODE_SELECT" ]] && WARP_MODE_SELECT=5 # 默认选流媒体
+                [[ -z "$WARP_MODE_SELECT" ]] && WARP_MODE_SELECT=5 
                 echo -e "   1. 自动注册 (默认)"
                 echo -e "   2. 手动录入 (私钥/IPv6/Reserved)"
                 read -p "   选择: " acc
                 if [[ "$acc" == "2" ]]; then
                     read -p "   Private Key: " k; export WARP_PRIV_KEY="$k"
-                    # [修改点] 增加格式提示，引导用户输入
-                    read -p "   IPv6 Address (例: 2606:xxx...): " i; export WARP_IPV6="$i"
+                    if [[ "$INSTALL_SB" == "true" ]]; then
+                        read -p "   IPv6 Address (例: 2606:xxx.../128): " i
+                    else
+                        read -p "   IPv6 Address (例: 2606:xxx...): " i
+                    fi
+                    export WARP_IPV6="$i"
                     read -p "   Reserved [x,x,x]: " r; export WARP_RESERVED="$r"
                 else
                     unset WARP_PRIV_KEY WARP_IPV6 WARP_RESERVED
@@ -294,7 +327,6 @@ menu_argo() {
 # --- 主循环 ---
 export AUTO_SETUP=true
 
-# 0. 启动清理检查 (交互模式下)
 if [[ -z "$INSTALL_SB" ]] && [[ -z "$INSTALL_XRAY" ]]; then
     check_dir_clean
 fi
