@@ -1,9 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  模块三：VLESS + TCP + Reality + Vision (v1.1 Auto-Adapter)
+#  模块三：VLESS + TCP + Reality + Vision (极致稳定版)
 #  - 模式: Manual (交互式) / Auto (自动部署)
 #  - 适配: 支持 auto_deploy.sh 传参 (PORT, AUTO_SETUP)
+#  - 修复: 自动清理同端口/同Tag旧节点，防止 Xray 启动冲突
 # ============================================================
 
 # 颜色定义
@@ -88,8 +89,12 @@ else
         read -p "请输入监听端口 (推荐 443 或 8443, 默认 8443): " CUSTOM_PORT
         [[ -z "$CUSTOM_PORT" ]] && PORT=8443 && break
         if [[ "$CUSTOM_PORT" =~ ^[0-9]+$ ]] && [ "$CUSTOM_PORT" -le 65535 ]; then
+            # 这里的 grep 检查只是简单的文本匹配，主要逻辑依靠 jq 清理
             if grep -q "\"port\": $CUSTOM_PORT" "$CONFIG_FILE"; then
-                 echo -e "${RED}警告: 端口 $CUSTOM_PORT 似乎已被之前的模块占用了，请换一个！${PLAIN}"
+                 echo -e "${RED}警告: 端口 $CUSTOM_PORT 似乎已被之前的模块占用了 (建议清理后再试)${PLAIN}"
+                 # 手动模式下允许用户头铁继续，反正后面会强制清理覆盖
+                 PORT="$CUSTOM_PORT"
+                 break
             else
                  PORT="$CUSTOM_PORT"
                  break
@@ -133,6 +138,14 @@ echo -e "${YELLOW}正在注入 Vision 节点...${PLAIN}"
 
 NODE_TAG="vless-vision-${PORT}"
 
+# ==========================================================
+# [关键修复] 先清理旧的同 Tag 或同端口配置，防止启动冲突
+# ==========================================================
+tmp_clean=$(mktemp)
+jq --arg port "$PORT" --arg tag "$NODE_TAG" \
+   'del(.inbounds[] | select(.tag == $tag or .port == ($port | tonumber)))' \
+   "$CONFIG_FILE" > "$tmp_clean" && mv "$tmp_clean" "$CONFIG_FILE"
+
 NODE_JSON=$(jq -n \
     --arg port "$PORT" \
     --arg tag "$NODE_TAG" \
@@ -171,6 +184,7 @@ NODE_JSON=$(jq -n \
     }')
 
 tmp=$(mktemp)
+# 安全追加新节点
 jq --argjson new_node "$NODE_JSON" '.inbounds += [$new_node]' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
 
 # 6. 重启与输出
@@ -194,9 +208,31 @@ if systemctl is-active --quiet xray; then
     echo -e "🚀 [v2rayN 分享链接]:"
     echo -e "${YELLOW}${SHARE_LINK}${PLAIN}"
     echo -e "----------------------------------------"
+    
+    # === 新增：OpenClash / Meta 输出 ===
+    echo -e "🐱 [OpenClash / Meta 配置块]:"
+    echo -e "${YELLOW}"
+    cat <<EOF
+- name: "${NODE_NAME}"
+  type: vless
+  server: ${PUBLIC_IP}
+  port: ${PORT}
+  uuid: ${UUID}
+  network: tcp
+  tls: true
+  udp: true
+  flow: xtls-rprx-vision
+  servername: ${SNI}
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: ${PUBLIC_KEY}
+    short-id: ${SHORT_ID}
+EOF
+    echo -e "${PLAIN}----------------------------------------"
+
 else
     echo -e "${RED}启动失败！${PLAIN}"
     echo -e "请检查日志: journalctl -u xray -e"
-    # 自动模式下失败也需要退出码
+    # 自动模式下失败也需要退出码，方便主脚本判断
     if [[ "$AUTO_SETUP" == "true" ]]; then exit 1; fi
 fi
