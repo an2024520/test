@@ -1,12 +1,12 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box 节点新增: VLESS + Vision + Reality (v3.1 Auto)
-#  - 核心: 自动识别路径 + 写入 Inbounds + 保存公钥到 .meta
-#  - 特性: 自动/手动逻辑完全隔离 (双轨制)
+#  Sing-box 节点新增: VLESS + Vision + Reality (v3.3 Final)
+#  - 架构: 参数分流 (自动/手动) -> 统一执行 -> 统一输出
+#  - 特性: 完整保留手动模式体验，自动模式增加文件存根
 # ============================================================
 
-# 颜色定义
+# --- 1. 基础定义与环境检查 ---
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -15,18 +15,16 @@ PLAIN='\033[0m'
 
 echo -e "${GREEN}>>> [Sing-box] 智能添加节点: VLESS + Vision + Reality ...${PLAIN}"
 
-# 1. 智能路径查找
-# ------------------------------------------------
+# 智能路径查找
 CONFIG_FILE=""
 PATHS=("/usr/local/etc/sing-box/config.json" "/etc/sing-box/config.json" "$HOME/sing-box/config.json")
-
 for p in "${PATHS[@]}"; do
     if [[ -f "$p" ]]; then
         CONFIG_FILE="$p"
         break
     fi
 done
-
+# 默认回退
 if [[ -z "$CONFIG_FILE" ]]; then
     CONFIG_FILE="/usr/local/etc/sing-box/config.json"
 fi
@@ -37,12 +35,13 @@ SB_BIN=$(command -v sing-box || echo "/usr/local/bin/sing-box")
 
 echo -e "${GREEN}>>> 锁定配置文件: ${CONFIG_FILE}${PLAIN}"
 
-# 2. 环境检查
+# 核心存在性检查
 if [[ ! -f "$SB_BIN" ]]; then
     echo -e "${RED}错误: 未找到 Sing-box 核心！请先运行 [核心环境管理] 安装。${PLAIN}"
     exit 1
 fi
 
+# 依赖工具检查
 if ! command -v jq &> /dev/null || ! command -v openssl &> /dev/null; then
     echo -e "${YELLOW}检测到缺少必要工具，正在安装 (jq, openssl)...${PLAIN}"
     if [ -f /etc/debian_version ]; then
@@ -52,7 +51,7 @@ if ! command -v jq &> /dev/null || ! command -v openssl &> /dev/null; then
     fi
 fi
 
-# 3. 初始化配置文件
+# 初始化骨架配置 (如果文件不存在)
 if [[ ! -f "$CONFIG_FILE" ]]; then
     echo -e "${YELLOW}配置文件不存在，正在初始化标准骨架...${PLAIN}"
     mkdir -p "$CONFIG_DIR"
@@ -82,47 +81,35 @@ EOF
     echo -e "${GREEN}标准骨架初始化完成。${PLAIN}"
 fi
 
-# 4. 用户配置参数 (核心修改区域：双轨逻辑)
+
+# --- 2. 参数获取阶段 (Parameter Acquisition) ---
+# 此阶段根据 AUTO_SETUP 变量进行逻辑分叉
+
 echo -e "${YELLOW}--- 配置 VLESS (Vision) 节点参数 ---${PLAIN}"
 
 if [[ "$AUTO_SETUP" == "true" ]]; then
-    # >>>>>>>>>> 自动模式通道 (变量优先) >>>>>>>>>>
-    echo -e "${GREEN}>>> 检测到自动部署模式...${PLAIN}"
+    # >>> 自动模式通道 >>>
+    echo -e "${GREEN}>>> [自动模式] 正在读取参数...${PLAIN}"
     
-    # [1. 端口]
-    if [[ -n "$PORT" ]]; then
-        echo -e "端口: ${GREEN}[继承外部]${PLAIN} $PORT"
-    else
-        PORT=443
-        echo -e "端口: ${GREEN}[自动默认]${PLAIN} 443"
-    fi
-
-    # [2. SNI]
-    if [[ -n "$REALITY_DOMAIN" ]]; then
-        SNI="$REALITY_DOMAIN"
-        echo -e "SNI : ${GREEN}[继承外部]${PLAIN} $SNI"
-    else
-        SNI="updates.cdn-apple.com"
-        echo -e "SNI : ${GREEN}[自动默认]${PLAIN} $SNI"
-    fi
+    # 端口: 优先读取注入变量，否则默认为 443
+    PORT=${PORT:-443}
+    echo -e "端口: ${GREEN}$PORT${PLAIN}"
     
-    # [3. UUID - 自动模式特有逻辑]
+    # SNI: 读取全局变量，否则使用默认
+    SNI=${REALITY_DOMAIN:-"updates.cdn-apple.com"}
+    echo -e "SNI : ${GREEN}$SNI${PLAIN}"
+    
+    # UUID: 如果全局变量有，则继承；否则留空(后面会生成)
     if [[ -n "$UUID" ]]; then
-        echo -e "UUID: ${GREEN}[继承外部]${PLAIN} $UUID"
-    else
-        UUID=$($SB_BIN generate uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
-        echo -e "UUID: ${GREEN}[随机生成]${PLAIN} $UUID"
+        echo -e "UUID: ${GREEN}$UUID (继承全局)${PLAIN}"
     fi
     
-    # 自动模式跳过连通性检查交互
-    if ! curl -s -I --max-time 5 "https://$SNI" >/dev/null; then
-        echo -e "${YELLOW}[警告] 无法连接到 $SNI，但自动模式下强制继续。${PLAIN}"
-    fi
+    # 自动模式下跳过 Curl 检查，强制继续
 
 else
-    # >>>>>>>>>> 手动模式通道 (保持 100% 原有交互) >>>>>>>>>>
+    # >>> 手动模式通道 (完整保留原版交互) >>>
     
-    # [A. 端口]
+    # [A. 端口设置]
     while true; do
         read -p "请输入监听端口 (推荐 443, 2053, 默认 443): " CUSTOM_PORT
         [[ -z "$CUSTOM_PORT" ]] && PORT=443 && break
@@ -138,7 +125,7 @@ else
         fi
     done
 
-    # [B. SNI]
+    # [B. SNI 选择]
     echo -e "${YELLOW}请选择伪装域名 (SNI) - 推荐:${PLAIN}"
     echo -e "  1. www.sony.jp (索尼日本)"
     echo -e "  2. www.nintendo.co.jp (任天堂)"
@@ -158,11 +145,7 @@ else
         *) SNI="updates.cdn-apple.com" ;;
     esac
     
-    # [C. UUID - 手动模式特有逻辑]
-    # 原有逻辑就是直接随机，不询问
-    UUID=$($SB_BIN generate uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
-
-    # [D. 连通性校验]
+    # [C. 连通性校验]
     echo -e "${YELLOW}正在检查连通性: $SNI ...${PLAIN}"
     if ! curl -s -I --max-time 5 "https://$SNI" >/dev/null; then
         echo -e "${RED}警告: 无法连接到 $SNI。建议更换。${PLAIN}"
@@ -171,10 +154,20 @@ else
     fi
 fi
 
-# 5. 生成密钥
-echo -e "${YELLOW}正在生成密钥...${PLAIN}"
-KEY_PAIR=$($SB_BIN generate reality-keypair 2>/dev/null)
 
+# --- 3. 资源生成阶段 (Common Generation) ---
+# 无论手动还是自动，都在这里准备 UUID 和 密钥
+
+echo -e "${YELLOW}正在生成密钥与 UUID...${PLAIN}"
+
+# 如果 UUID 还是空的 (自动模式未指定，或手动模式)，则生成
+if [[ -z "$UUID" ]]; then
+    UUID=$($SB_BIN generate uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
+    echo -e "UUID 已生成: ${SKYBLUE}$UUID${PLAIN}"
+fi
+
+# 生成 Reality 密钥对
+KEY_PAIR=$($SB_BIN generate reality-keypair 2>/dev/null)
 if [[ -z "$KEY_PAIR" ]]; then
     PRIVATE_KEY=$(openssl rand -base64 32 | tr -d /=+ | head -c 43)
     PUBLIC_KEY="GenerateFailed"
@@ -185,20 +178,22 @@ else
 fi
 SHORT_ID=$(openssl rand -hex 8)
 
-# 6. 构建与注入节点
-echo -e "${YELLOW}正在更新配置文件...${PLAIN}"
 
+# --- 4. 核心执行阶段 (Unified Execution) ---
+# 写入配置、重启服务
+
+echo -e "${YELLOW}正在更新配置文件...${PLAIN}"
 NODE_TAG="Vision-${PORT}"
 
-# === 步骤 1: 强制日志托管 ===
+# 步骤 1: 强制日志托管 (防止 Permission Denied)
 tmp_log=$(mktemp)
 jq '.log.output = "" | .log.timestamp = false' "$CONFIG_FILE" > "$tmp_log" && mv "$tmp_log" "$CONFIG_FILE"
 
-# === 步骤 2: 端口霸占清理 ===
+# 步骤 2: 端口霸占清理 (删除同端口旧节点)
 tmp0=$(mktemp)
 jq --argjson port "$PORT" 'del(.inbounds[]? | select(.listen_port == $port))' "$CONFIG_FILE" > "$tmp0" && mv "$tmp0" "$CONFIG_FILE"
 
-# === 步骤 3: 构建 Sing-box 标准 VLESS Vision JSON ===
+# 步骤 3: 构建 Sing-box 标准 VLESS Vision JSON
 NODE_JSON=$(jq -n \
     --arg port "$PORT" \
     --arg tag "$NODE_TAG" \
@@ -236,16 +231,20 @@ NODE_JSON=$(jq -n \
 tmp=$(mktemp)
 jq --argjson new_node "$NODE_JSON" 'if .inbounds == null then .inbounds = [] else . end | .inbounds += [$new_node]' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
 
-# === 步骤 4: 写入伴生元数据 ===
+# 步骤 4: 写入伴生元数据 (.meta)
 if [[ ! -f "$META_FILE" ]]; then echo "{}" > "$META_FILE"; fi
 tmp_meta=$(mktemp)
 jq --arg tag "$NODE_TAG" --arg pbk "$PUBLIC_KEY" --arg sid "$SHORT_ID" --arg sni "$SNI" \
    '. + {($tag): {"pbk": $pbk, "sid": $sid, "sni": $sni}}' "$META_FILE" > "$tmp_meta" && mv "$tmp_meta" "$META_FILE"
 
-# 7. 重启与输出
+# 重启服务
 echo -e "${YELLOW}正在重启服务...${PLAIN}"
 systemctl restart sing-box
 sleep 2
+
+
+# --- 5. 输出反馈阶段 (Unified Output + Logging) ---
+# 屏幕完整输出，自动模式额外存根
 
 if systemctl is-active --quiet sing-box; then
     PUBLIC_IP=$(curl -s4m5 https://api.ip.sb/ip || curl -s4 ifconfig.me)
@@ -259,22 +258,15 @@ if systemctl is-active --quiet sing-box; then
     echo -e "节点 Tag    : ${YELLOW}${NODE_TAG}${PLAIN}"
     echo -e "端口        : ${YELLOW}${PORT}${PLAIN}"
     echo -e "SNI (伪装)  : ${YELLOW}${SNI}${PLAIN}"
-    echo -e "UUID        : ${SKYBLUE}${UUID}${PLAIN}"
+    echo -e "流控 (Flow) : xtls-rprx-vision"
     echo -e "----------------------------------------"
     echo -e "🚀 [v2rayN 分享链接]:"
     echo -e "${YELLOW}${SHARE_LINK}${PLAIN}"
     echo -e "----------------------------------------"
     
-    # 自动化模式下，将链接追加到日志文件
-    if [[ "$AUTO_SETUP" == "true" ]]; then
-        echo "${SHARE_LINK}" >> /root/sb_nodes.txt
-    fi
-    
-    # 手动模式下才显示详细配置块
-    if [[ "$AUTO_SETUP" != "true" ]]; then
-        echo -e "🐱 [Clash Meta / OpenClash 配置块]:"
-        echo -e "${YELLOW}"
-        cat <<EOF
+    echo -e "🐱 [Clash Meta / OpenClash 配置块]:"
+    echo -e "${YELLOW}"
+    cat <<EOF
 - name: "${NODE_NAME}"
   type: vless
   server: ${PUBLIC_IP}
@@ -290,8 +282,67 @@ if systemctl is-active --quiet sing-box; then
     short-id: ${SHORT_ID}
   client-fingerprint: chrome
 EOF
-        echo -e "${PLAIN}----------------------------------------"
+    echo -e "${PLAIN}----------------------------------------"
+
+    echo -e "📱 [Sing-box 客户端配置块]:"
+    echo -e "${YELLOW}"
+    cat <<EOF
+{
+  "type": "vless",
+  "tag": "proxy-out",
+  "server": "${PUBLIC_IP}",
+  "server_port": ${PORT},
+  "uuid": "${UUID}",
+  "flow": "xtls-rprx-vision",
+  "tls": {
+    "enabled": true,
+    "server_name": "${SNI}",
+    "utls": {
+      "enabled": true,
+      "fingerprint": "chrome"
+    },
+    "reality": {
+      "enabled": true,
+      "public_key": "${PUBLIC_KEY}",
+      "short_id": "${SHORT_ID}"
+    }
+  }
+}
+EOF
+    echo -e "${PLAIN}----------------------------------------"
+    echo -e "${GREEN}提示: 节点公钥已备份至 ${META_FILE}，可随时使用查看菜单获取。${PLAIN}"
+    
+    # === [自动模式特有逻辑] 存根到文件 ===
+    if [[ "$AUTO_SETUP" == "true" ]]; then
+        LOG_FILE="/root/sb_nodes.txt"
+        {
+            echo "========================================"
+            echo "Tag: ${NODE_TAG} | Time: $(date)"
+            echo "--- v2rayN ---"
+            echo "${SHARE_LINK}"
+            echo "--- OpenClash ---"
+            cat <<EOF_LOG
+- name: "${NODE_NAME}"
+  type: vless
+  server: ${PUBLIC_IP}
+  port: ${PORT}
+  uuid: ${UUID}
+  network: tcp
+  tls: true
+  udp: true
+  flow: xtls-rprx-vision
+  servername: ${SNI}
+  reality-opts:
+    public-key: ${PUBLIC_KEY}
+    short-id: ${SHORT_ID}
+  client-fingerprint: chrome
+EOF_LOG
+            echo "========================================"
+            echo ""
+        } >> "$LOG_FILE"
+        echo -e "${SKYBLUE}>>> [自动记录] 节点信息已追加至: ${LOG_FILE}${PLAIN}"
     fi
+
 else
     echo -e "${RED}启动失败！请检查日志: journalctl -u sing-box -e${PLAIN}"
 fi
