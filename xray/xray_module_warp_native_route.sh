@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Native WARP 增强模块 (Xray Auto-Enhanced v1.1)
+#  Native WARP 增强模块 (Xray Auto-Enhanced v1.2)
 #  - 无需 Wireproxy，由 Xray 内核直接连接 Cloudflare
 #  - 自动化: 支持 auto_deploy.sh 的三要素传入与 Tag 分流
-#  - 新增: 无头注册模式 (Headless Registration)
+#  - 新增: 模式4(双栈) 和 模式5(Stream)
 # ============================================================
 
 # --- 1. 全局配置 (与 xray_core.sh 严格配套) ---
@@ -397,7 +397,7 @@ EOF
         fi
     fi
     
-    # 2. 路由模式应用
+    # 2. 路由模式应用 (新增 4 和 5)
     case "$WARP_MODE_SELECT" in
         1) apply_warp_config "ipv4" ;;
         2) apply_warp_config "ipv6" ;;
@@ -409,7 +409,18 @@ EOF
                 apply_warp_config "manual_node" "$tags_json"
             fi
             ;;
-        *) apply_warp_config "stream" ;;
+        4) 
+            echo -e "${SKYBLUE}[自动模式] 策略: 双栈全局接管${PLAIN}"
+            apply_warp_config "dual" 
+            ;;
+        5) 
+            echo -e "${SKYBLUE}[自动模式] 策略: 仅流媒体分流${PLAIN}"
+            apply_warp_config "stream" 
+            ;;
+        *) 
+            # 默认：流媒体
+            apply_warp_config "stream" 
+            ;;
     esac
     
     echo -e "${GREEN}>>> [WARP-Xray] 自动化配置完成。${PLAIN}"
