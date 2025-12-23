@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  模块九：VLESS + WS (Tunnel 专用版 / 无需证书)(v1.2 Fix-Crash)
+#  模块九：VLESS + WS (Tunnel 专用版 / 无需证书)
 #  - 版本: v1.2 (Fix-Crash & Auto-Adapter)
 #  - 修复: 增加 Tag + Port 双重清理逻辑，防止核心崩溃
 #  - 适配: 完美支持 auto_deploy.sh 自动化部署
@@ -61,9 +61,12 @@ fi
 if [[ "$AUTO_SETUP" == "true" ]]; then
     # >>> 自动模式 >>>
     echo -e "${GREEN}>>> [自动模式] 正在读取参数...${PLAIN}"
-    PORT=${PORT:-8080}
-    WS_PATH=${SB_WS_PATH:-"/ws"} # 兼容之前定义的变量名
+    # 优先读取 Xray 专用变量，若无则读取通用变量，最后默认 8080
+    PORT=${XRAY_WS_PORT:-${PORT:-8080}}
+    # 路径优先读取 Xray 专用，若无则尝试读取 Sing-box 变量(保持兼容)，最后默认 /ws
+    WS_PATH=${XRAY_WS_PATH:-${SB_WS_PATH:-"/ws"}}
     DOMAIN=${ARGO_DOMAIN}
+    
     echo -e "监听端口: ${GREEN}$PORT${PLAIN}"
     echo -e "WS 路径 : ${GREEN}$WS_PATH${PLAIN}"
     echo -e "隧道域名: ${GREEN}$DOMAIN${PLAIN}"
@@ -97,17 +100,19 @@ NODE_TAG="vless-ws-tunnel-${PORT}"
 
 echo -e "${YELLOW}正在更新 Xray 配置...${PLAIN}"
 
-# [关键修复] 双重清理：删除占用同端口或同 Tag 的旧配置
+# [关键修复] 双重清理：删除占用同端口(.port) 或 同Tag(.tag) 的旧配置
+# 注意：Xray 配置文件中使用 "port" 字段，Sing-box 使用 "listen_port"
 tmp_clean=$(mktemp)
 jq --argjson p "$PORT" --arg tag "$NODE_TAG" \
    'del(.inbounds[]? | select(.port == $p or .tag == $tag))' \
    "$CONFIG_FILE" > "$tmp_clean" && mv "$tmp_clean" "$CONFIG_FILE"
 
 # 构建节点 JSON
+# 强制监听 127.0.0.1，Security=none
 NODE_JSON=$(jq -n \
     --arg port "$PORT" \
     --arg tag "$NODE_TAG" \
-    --arg uuid "$uuid" \
+    --arg uuid "$UUID" \
     --arg path "$WS_PATH" \
     '{
       tag: $tag,
