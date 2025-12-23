@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  模块三：VLESS + TCP + Reality + Vision (极致稳定版)(v1.1 Auto-Adapter)
+#  模块三：VLESS + TCP + Reality + Vision (v1.1 Auto-Adapter)
 #  - 模式: Manual (交互式) / Auto (自动部署)
 #  - 适配: 支持 auto_deploy.sh 传参 (PORT, AUTO_SETUP)
 # ============================================================
