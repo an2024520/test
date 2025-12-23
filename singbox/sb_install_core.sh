@@ -14,6 +14,12 @@ YELLOW='\033[0;33m'
 SKYBLUE='\033[0;36m'
 PLAIN='\033[0m'
 
+# 1. 检查 root 权限 (移至最前，确保安全)
+if [[ $EUID -ne 0 ]]; then
+    echo -e "${RED}错误: 请使用 root 权限运行此脚本！${PLAIN}"
+    exit 1
+fi
+
 # 核心路径定义 (遵循 Xray 脚本的目录规范)
 BIN_PATH="/usr/local/bin/sing-box"
 CONF_DIR="/usr/local/etc/sing-box"
@@ -22,29 +28,24 @@ LOG_DIR="/var/log/sing-box"
 SERVICE_FILE="/etc/systemd/system/sing-box.service"
 
 # =================================================
-# [新增] 自动化模式 - 幂等性检查
+# [新增] 自动化模式 - 幂等性检查 (优化版)
 # =================================================
-# 如果在自动模式下，且核心文件已存在，则跳过安装
+# 逻辑：在自动模式下，如果核心文件已存在，则跳过下载和重置
 if [[ "$AUTO_SETUP" == "true" ]] && [[ -f "$BIN_PATH" ]]; then
-    # 尝试获取版本号仅作显示
+    # 尝试获取版本号 (Sing-box version 输出通常是 "sing-box version 1.8.0 ...")
     CURRENT_VER=$($BIN_PATH version 2>/dev/null | head -n 1 | awk '{print $3}')
     echo -e "${GREEN}>>> [自动模式] 检测到 Sing-box (v${CURRENT_VER}) 已安装，跳过核心部署。${PLAIN}"
     
-    # 确保服务是启动状态
+    # 1. 重载 Systemd 配置 (防止服务文件未加载)
     systemctl daemon-reload
-    systemctl enable sing-box >/dev/null 2>&1
-    systemctl start sing-box >/dev/null 2>&1
     
+    # 2. 仅设置开机自启，严禁在此处 Start (因为 Config 可能还未生成)
+    systemctl enable sing-box >/dev/null 2>&1
+    
+    # 3. 退出，保护现有环境
     exit 0
 fi
 # =================================================
-
-
-# 1. 检查 root 权限
-if [[ $EUID -ne 0 ]]; then
-    echo -e "${RED}错误: 请使用 root 权限运行此脚本！${PLAIN}"
-    exit 1
-fi
 
 echo -e "${GREEN}>>> 开始安装/重置 Sing-box 核心环境...${PLAIN}"
 
