@@ -1,9 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box 节点模块: VLESS + WS (Tunnel专用)
+#  Sing-box 节点模块: VLESS + WS (Tunnel专用——v1.2 Fix-Crash)
 #  - 模式: Manual (交互式) / Auto (变量传参)
 #  - 特性: 无 TLS，专用于 CF Tunnel 后端
+#  - 修复: 强化清理逻辑 (Tag + Port 双重清理)
 # ============================================================
 
 RED='\033[0;31m'
@@ -38,9 +39,12 @@ write_node_config() {
     # 1. 初始化
     if [[ ! -f "$CONFIG_FILE" ]]; then mkdir -p "$CONFIG_DIR"; echo '{"inbounds":[],"outbounds":[]}' > "$CONFIG_FILE"; fi
     
-    # 2. 清理旧同端口配置
+    # 2. [关键修复] 双重清理：删除 同端口 OR 同Tag 的旧节点
+    # 防止因 Tag 重复导致 Sing-box 核心启动崩溃
     local tmp_clean=$(mktemp)
-    jq --argjson p "$port" 'del(.inbounds[]? | select(.listen_port == $p))' "$CONFIG_FILE" > "$tmp_clean" && mv "$tmp_clean" "$CONFIG_FILE"
+    jq --argjson p "$port" --arg tag "$node_tag" \
+       'del(.inbounds[]? | select(.listen_port == $p or .tag == $tag))' \
+       "$CONFIG_FILE" > "$tmp_clean" && mv "$tmp_clean" "$CONFIG_FILE"
 
     # 3. 构造 JSON
     local node_json=$(jq -n \
@@ -87,7 +91,6 @@ print_info() {
     echo -e "${GREEN}节点部署成功！${PLAIN}"
     
     if [[ -n "$domain" ]]; then
-        # 构造分享链接: Tunnel 场景下前端是 TLS 443
         local share_link="vless://${uuid}@${domain}:443?encryption=none&security=tls&type=ws&host=${domain}&path=${ws_path}&sni=${domain}#SB-Tunnel-${port}"
         
         echo -e ""
@@ -115,11 +118,8 @@ print_info() {
 manual_menu() {
     echo -e "${GREEN}>>> [Sing-box] 智能添加节点: VLESS + WS (Tunnel) ...${PLAIN}"
     get_config_path
-    
-    # 依赖检查
     if ! command -v jq &> /dev/null; then if [ -f /etc/debian_version ]; then apt update -y && apt install -y jq; fi; fi
 
-    # 交互输入
     while true; do
         read -p "请输入监听端口 (推荐 8080): " c_port
         [[ -z "$c_port" ]] && c_port=8080 && break
@@ -132,17 +132,13 @@ manual_menu() {
 
     local uuid=$($SB_BIN generate uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
 
-    # 执行写入
     if write_node_config "$c_port" "$c_path" "$uuid"; then
-        # 尝试自动抓取域名 (TryCloudflare)
         local auto_domain=$(journalctl -u cloudflared --no-pager 2>/dev/null | grep -o 'https://.*\.trycloudflare\.com' | tail -n 1 | sed 's/https:\/\///')
-        
         if [[ -z "$auto_domain" ]]; then
              echo -e "${YELLOW}提示：未自动抓取到临时域名。${PLAIN}"
              read -p "请输入您的 Cloudflare Tunnel 域名 (回车跳过): " m_domain
              auto_domain=$m_domain
         fi
-        
         print_info "$c_port" "$c_path" "$uuid" "$auto_domain"
     fi
 }
@@ -154,11 +150,9 @@ manual_menu() {
 auto_main() {
     echo -e "${GREEN}>>> [SB-Tunnel] 启动自动化部署...${PLAIN}"
     get_config_path
-    
-    # 从环境变量读取
     local port="${SB_WS_PORT:-8080}"
     local path="${SB_WS_PATH:-/ws}"
-    local domain="${ARGO_DOMAIN}" # 由 auto_deploy.sh 传入
+    local domain="${ARGO_DOMAIN}"
     local uuid=$($SB_BIN generate uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
 
     if write_node_config "$port" "$path" "$uuid"; then
@@ -169,12 +163,4 @@ auto_main() {
     fi
 }
 
-# ==========================================
-# 入口分流
-# ==========================================
-
-if [[ "$AUTO_SETUP" == "true" ]]; then
-    auto_main
-else
-    manual_menu
-fi
+if [[ "$AUTO_SETUP" == "true" ]]; then auto_main; else manual_menu; fi
