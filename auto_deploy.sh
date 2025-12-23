@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================
-#  Commander Auto-Deploy (v6.7 Full-Stack)
+#  Commander Auto-Deploy (v6.7 Full-Stack-Audit)
 #  - 核心特性: 超市选购模式 | 核心/WARP/Argo 模块化组装
-#  - 新增协议: Sing-box AnyTLS & Hysteria 2
-#  - 修复: 智能跳过已运行的 Argo Tunnel
+#  - 审计状态: 所有子脚本均已应用 Tag+Port 清理逻辑
+#  - 协议支持: Sing-box 全协议 (Vision, WS, Tunnel, AnyTLS, Hy2) + Xray
 # ============================================================
 
 # --- 基础定义 ---
@@ -162,6 +162,7 @@ deploy_logic() {
 
     # === 4. Argo (Tunnel) 增强逻辑 ===
     if [[ "$INSTALL_ARGO" == "true" ]]; then
+        # 智能检测：如果 Tunnel 已运行，则跳过安装
         if systemctl is-active --quiet cloudflared; then
             echo -e "${SKYBLUE}>>> [检测] Cloudflare Tunnel 服务已在运行，跳过安装程序。${PLAIN}"
             echo -e "${SKYBLUE}>>> [提示] 本次新增的节点已就绪。如需映射新端口，请手动更新 Tunnel 配置。${PLAIN}"
