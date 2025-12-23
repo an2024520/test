@@ -1,10 +1,11 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box 节点模块: VLESS + WS (Tunnel专用)(v1.2 Fix-Crash)
+#  Sing-box 节点模块: VLESS + WS (Tunnel专用)
+#  - 版本: v1.3 (Security-Fix)
 #  - 模式: Manual (交互式) / Auto (变量传参)
-#  - 特性: 无 TLS，专用于 CF Tunnel 后端
-#  - 修复: 强化清理逻辑 (Tag + Port 双重清理)
+#  - 修复: 强制监听 127.0.0.1，防止公网直接扫描
+#  - 修复: 强化 Tag + Port 双重清理逻辑
 # ============================================================
 
 RED='\033[0;31m'
@@ -46,6 +47,7 @@ write_node_config() {
        "$CONFIG_FILE" > "$tmp_clean" && mv "$tmp_clean" "$CONFIG_FILE"
 
     # 3. 构造 JSON
+    # [安全修复] listen 改为 127.0.0.1，仅允许本地 Tunnel 访问
     local node_json=$(jq -n \
         --arg port "$port" \
         --arg tag "$node_tag" \
@@ -54,7 +56,7 @@ write_node_config() {
         '{
             "type": "vless",
             "tag": $tag,
-            "listen": "::",
+            "listen": "127.0.0.1",
             "listen_port": ($port | tonumber),
             "users": [{ "uuid": $uuid }],
             "transport": { 
@@ -104,11 +106,16 @@ print_info() {
         echo -e "${GREEN}分享链接:${PLAIN}"
         echo -e "${YELLOW}${share_link}${PLAIN}"
         echo -e "------------------------------------------------------"
+        echo -e "${GRAY}* 安全提示: 节点监听在 127.0.0.1:${port}，已屏蔽公网直接扫描。${PLAIN}"
     else
         echo -e "${YELLOW}未提供域名，无法生成完整链接。请在客户端手动填写 Tunnel 域名。${PLAIN}"
-        echo -e "本地监听端口: $port | Path: $ws_path | UUID: $uuid"
+        echo -e "本地监听端口: 127.0.0.1:$port | Path: $ws_path | UUID: $uuid"
     fi
 }
+
+# ==========================================
+# 2. 手动模式 (Manual Menu)
+# ==========================================
 
 manual_menu() {
     echo -e "${GREEN}>>> [Sing-box] 智能添加节点: VLESS + WS (Tunnel) ...${PLAIN}"
@@ -137,6 +144,10 @@ manual_menu() {
         print_info "$c_port" "$c_path" "$uuid" "$auto_domain"
     fi
 }
+
+# ==========================================
+# 3. 自动模式 (Auto Main)
+# ==========================================
 
 auto_main() {
     echo -e "${GREEN}>>> [SB-Tunnel] 启动自动化部署...${PLAIN}"
