@@ -1,10 +1,11 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box Native WARP 管理模块 (SB-Commander v6.5 Auto-Final)
+#  Sing-box Native WARP 管理模块 (SB-Commander v6.5 Auto-Final)(v2.4 Auto-Complete)
 #  - 核心修复: 强制 IP 掩码 (/32 /128) 解决 Sing-box 解析崩溃
 #  - 物理链路: 强制 IPv6 Endpoint 绕过 NAT64 解析故障
 #  - 自动化适配: 支持 auto_deploy.sh 的三要素传入与 Tag 分流
+#  - 新增特性: 支持双栈全局接管 (Mode 4) & 纯流媒体分流 (Mode 5)
 # ============================================================
 
 RED='\033[0;31m'
@@ -291,16 +292,22 @@ mode_global() {
     echo -e " a. 仅 IPv4  b. 仅 IPv6  c. 双栈全局 (默认)"
     read -p "选择: " sub
     
+    # 1. 先添加防环回规则 (High Priority)
     local anti_loop_rule=$(jq -n '{ "domain": ["engage.cloudflareclient.com", "cloudflare.com"], "outbound": "direct" }')
     apply_routing_rule "$anti_loop_rule"
 
+    # 2. 根据选择生成规则
     local rule=""
     case "$sub" in
         a) rule=$(jq -n '{ "ip_version": 4, "outbound": "WARP" }') ;;
         b) rule=$(jq -n '{ "ip_version": 6, "outbound": "WARP" }') ;;
-        *) rule=$(jq -n '{ "outbound": "WARP" }') ;;
+        *) 
+           # 双栈全局 Catch-All
+           rule=$(jq -n '{ "outbound": "WARP" }') 
+           ;;
     esac
     
+    # 应用全局规则
     apply_routing_rule "$rule"
     echo -e "${GREEN}全局接管策略已应用。防环回规则已置顶。${PLAIN}"
 }
@@ -402,21 +409,39 @@ auto_main() {
     fi
 
     # --- 2. 路由模式应用 ---
+    # 先应用防环回规则
+    local anti_loop_rule=$(jq -n '{ "domain": ["engage.cloudflareclient.com", "cloudflare.com"], "outbound": "direct" }')
+    apply_routing_rule "$anti_loop_rule"
+    
     local rule=""
     case "$WARP_MODE_SELECT" in
-        1) rule=$(jq -n '{ "ip_version": 4, "outbound": "WARP" }');;
-        2) rule=$(jq -n '{ "ip_version": 6, "outbound": "WARP" }');;
+        1)
+            # IPv4 优先
+            rule=$(jq -n '{ "ip_version": 4, "outbound": "WARP" }');;
+        2)
+            # IPv6 优先
+            rule=$(jq -n '{ "ip_version": 6, "outbound": "WARP" }');;
         3)
-            # 处理逗号分隔的 Tag 字符串，转为 JSON 数组
+            # 指定节点
             if [[ -n "$WARP_INBOUND_TAGS" ]]; then
                 local tags_json=$(echo "$WARP_INBOUND_TAGS" | jq -R 'split(",")')
                 echo -e "   > 目标节点: $WARP_INBOUND_TAGS"
                 rule=$(jq -n --argjson ib "$tags_json" '{ "inbound": $ib, "outbound": "WARP" }')
             fi
             ;;
+        4)
+            # 双栈全局 (Catch-All)
+            echo -e "${SKYBLUE}[自动模式] 策略: 双栈全局接管${PLAIN}"
+            rule=$(jq -n '{ "outbound": "WARP" }')
+            ;;
+        5)
+            # 仅流媒体
+            echo -e "${SKYBLUE}[自动模式] 策略: 仅流媒体分流${PLAIN}"
+            rule=$(jq -n '{ "domain_suffix": ["netflix.com","nflxvideo.net","openai.com","ai.com","disney.com","disneyplus.com","google.com","youtube.com"], "outbound": "WARP" }')
+            ;;
         *) 
-            # 默认：流媒体
-            rule=$(jq -n '{ "domain_suffix": ["netflix.com","openai.com","google.com","youtube.com"], "outbound": "WARP" }');;
+            # 默认
+            rule=$(jq -n '{ "domain_suffix": ["netflix.com","nflxvideo.net","openai.com","ai.com","disney.com","disneyplus.com","google.com","youtube.com"], "outbound": "WARP" }');;
     esac
     
     [[ -n "$rule" ]] && apply_routing_rule "$rule"
