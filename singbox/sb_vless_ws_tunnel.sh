@@ -1,136 +1,180 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box 节点新增: VLESS + WS (Tunnel专用)
-#  - 核心: 自动识别路径 + 写入 Inbounds
-#  - 特性: 无 TLS，专用于 CF Tunnel 后端或 Nginx 反代
+#  Sing-box 节点模块: VLESS + WS (Tunnel专用)
+#  - 模式: Manual (交互式) / Auto (变量传参)
+#  - 特性: 无 TLS，专用于 CF Tunnel 后端
 # ============================================================
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+SKYBLUE='\033[0;36m'
 PLAIN='\033[0m'
 
-echo -e "${GREEN}>>> [Sing-box] 智能添加节点: VLESS + WS (Tunnel) ...${PLAIN}"
+# ==========================================
+# 1. 核心功能函数 (Core Logic)
+# ==========================================
 
-# 1. 智能路径查找
-CONFIG_FILE=""
-PATHS=("/usr/local/etc/sing-box/config.json" "/etc/sing-box/config.json" "$HOME/sing-box/config.json")
-for p in "${PATHS[@]}"; do
-    if [[ -f "$p" ]]; then CONFIG_FILE="$p"; break; fi
-done
-if [[ -z "$CONFIG_FILE" ]]; then CONFIG_FILE="/usr/local/etc/sing-box/config.json"; fi
+get_config_path() {
+    CONFIG_FILE=""
+    PATHS=("/usr/local/etc/sing-box/config.json" "/etc/sing-box/config.json" "$HOME/sing-box/config.json")
+    for p in "${PATHS[@]}"; do
+        if [[ -f "$p" ]]; then CONFIG_FILE="$p"; break; fi
+    done
+    if [[ -z "$CONFIG_FILE" ]]; then CONFIG_FILE="/usr/local/etc/sing-box/config.json"; fi
+    CONFIG_DIR=$(dirname "$CONFIG_FILE")
+    SB_BIN=$(command -v sing-box || echo "/usr/local/bin/sing-box")
+}
 
-CONFIG_DIR=$(dirname "$CONFIG_FILE")
-SB_BIN=$(command -v sing-box || echo "/usr/local/bin/sing-box")
-
-echo -e "${GREEN}>>> 锁定配置文件: ${CONFIG_FILE}${PLAIN}"
-
-# 2. 依赖检查
-if ! command -v jq &> /dev/null; then if [ -f /etc/debian_version ]; then apt update -y && apt install -y jq; fi; fi
-
-# 3. 参数配置
-while true; do
-    read -p "请输入监听端口 (推荐 8080): " CUSTOM_PORT
-    [[ -z "$CUSTOM_PORT" ]] && PORT=8080 && break
-    if [[ "$CUSTOM_PORT" =~ ^[0-9]+$ ]] && [ "$CUSTOM_PORT" -le 65535 ]; then
-        PORT="$CUSTOM_PORT"
-        break
-    else
-        echo -e "${RED}无效端口。${PLAIN}"
-    fi
-done
-
-read -p "请输入 WebSocket 路径 (默认 /ws): " WS_PATH
-[[ -z "$WS_PATH" ]] && WS_PATH="/ws"
-if [[ "${WS_PATH:0:1}" != "/" ]]; then WS_PATH="/$WS_PATH"; fi
-
-# 4. 生成 UUID
-UUID=$($SB_BIN generate uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
-
-# 5. 写入配置
-NODE_TAG="Tunnel-${PORT}"
-
-# A. 初始化/清理
-if [[ ! -f "$CONFIG_FILE" ]]; then mkdir -p "$CONFIG_DIR"; echo '{"inbounds":[],"outbounds":[]}' > "$CONFIG_FILE"; fi
-tmp_clean=$(mktemp)
-jq --argjson port "$PORT" 'del(.inbounds[]? | select(.listen_port == $port))' "$CONFIG_FILE" > "$tmp_clean" && mv "$tmp_clean" "$CONFIG_FILE"
-
-# B. 构造 Inbound JSON (显式增加字段)
-NODE_JSON=$(jq -n \
-    --arg port "$PORT" \
-    --arg tag "$NODE_TAG" \
-    --arg uuid "$UUID" \
-    --arg path "$WS_PATH" \
-    '{
-        "type": "vless",
-        "tag": $tag,
-        "listen": "::",
-        "listen_port": ($port | tonumber),
-        "users": [{ 
-            "uuid": $uuid 
-        }],
-        "transport": { 
-            "type": "ws", 
-            "path": $path,
-            "max_early_data": 0,
-            "early_data_header_name": "Sec-WebSocket-Protocol"
-        }
-    }')
-
-# C. 写入
-tmp_add=$(mktemp)
-jq --argjson new "$NODE_JSON" 'if .inbounds == null then .inbounds = [] else . end | .inbounds += [$new]' "$CONFIG_FILE" > "$tmp_add" && mv "$tmp_add" "$CONFIG_FILE"
-
-# 6. 重启服务
-systemctl restart sing-box
-sleep 1
-
-if systemctl is-active --quiet sing-box; then
-    echo -e "${GREEN}配置写入成功！${PLAIN} Tag: ${NODE_TAG}"
-    echo -e "------------------------------------------------------"
-
-    # --- 隧道域名探测与补全逻辑 ---
+write_node_config() {
+    local port="$1"
+    local ws_path="$2"
+    local uuid="$3"
     
-    # A. 尝试从日志中自动抓取 TryCloudflare 临时隧道域名
-    ARGO_DOMAIN=$(journalctl -u cloudflared --no-pager 2>/dev/null | grep -o 'https://.*\.trycloudflare\.com' | tail -n 1 | sed 's/https:\/\///')
+    local node_tag="Tunnel-${port}"
+    
+    # 1. 初始化
+    if [[ ! -f "$CONFIG_FILE" ]]; then mkdir -p "$CONFIG_DIR"; echo '{"inbounds":[],"outbounds":[]}' > "$CONFIG_FILE"; fi
+    
+    # 2. 清理旧同端口配置
+    local tmp_clean=$(mktemp)
+    jq --argjson p "$port" 'del(.inbounds[]? | select(.listen_port == $p))' "$CONFIG_FILE" > "$tmp_clean" && mv "$tmp_clean" "$CONFIG_FILE"
 
-    # B. 如果抓取不到，提示用户手动输入（兼容固定域名隧道）
-    if [[ -z "$ARGO_DOMAIN" ]]; then
-        echo -e "${YELLOW}提示：未探测到正在运行的临时隧道域名。${PLAIN}"
-        read -p "请输入您的 Cloudflare Tunnel 域名 (直接回车跳过链接生成): " MANUAL_DOMAIN
-        ARGO_DOMAIN=$MANUAL_DOMAIN
+    # 3. 构造 JSON
+    local node_json=$(jq -n \
+        --arg port "$port" \
+        --arg tag "$node_tag" \
+        --arg uuid "$uuid" \
+        --arg path "$ws_path" \
+        '{
+            "type": "vless",
+            "tag": $tag,
+            "listen": "::",
+            "listen_port": ($port | tonumber),
+            "users": [{ "uuid": $uuid }],
+            "transport": { 
+                "type": "ws", 
+                "path": $path,
+                "max_early_data": 0,
+                "early_data_header_name": "Sec-WebSocket-Protocol"
+            }
+        }')
+
+    # 4. 写入
+    local tmp_add=$(mktemp)
+    jq --argjson new "$node_json" 'if .inbounds == null then .inbounds = [] else . end | .inbounds += [$new]' "$CONFIG_FILE" > "$tmp_add" && mv "$tmp_add" "$CONFIG_FILE"
+
+    # 5. 重启
+    systemctl restart sing-box
+    sleep 1
+    
+    if systemctl is-active --quiet sing-box; then
+        return 0
+    else
+        echo -e "${RED}Sing-box 重启失败，请检查日志。${PLAIN}"
+        return 1
     fi
+}
 
-    # C. 生成并输出节点信息
-    if [[ -n "$ARGO_DOMAIN" ]]; then
-        echo -e "${GREEN}检测到隧道域名: ${ARGO_DOMAIN}${PLAIN}"
-        
-        # 构造 VLESS 分享链接 (针对 Tunnel 场景优化：443端口 + TLS开启 + 加密none)
-        # 备注：Sing-box 做后端时，CF 隧道前端是 TLS 443，所以这里直接补全
-        SHARE_LINK="vless://${UUID}@${ARGO_DOMAIN}:443?encryption=none&security=tls&type=ws&host=${ARGO_DOMAIN}&path=${WS_PATH}&sni=${ARGO_DOMAIN}#SB-Tunnel-${PORT}"
+print_info() {
+    local port="$1"
+    local ws_path="$2"
+    local uuid="$3"
+    local domain="$4"
+    
+    echo -e "${GREEN}节点部署成功！${PLAIN}"
+    
+    if [[ -n "$domain" ]]; then
+        # 构造分享链接: Tunnel 场景下前端是 TLS 443
+        local share_link="vless://${uuid}@${domain}:443?encryption=none&security=tls&type=ws&host=${domain}&path=${ws_path}&sni=${domain}#SB-Tunnel-${port}"
         
         echo -e ""
-        echo -e "${BLUE}========= Cloudflare Tunnel 专用配置 =========${PLAIN}"
-        echo -e "${SKYBLUE}地址 (Address):${PLAIN} ${ARGO_DOMAIN}"
+        echo -e "${BLUE}========= Cloudflare Tunnel 节点信息 =========${PLAIN}"
+        echo -e "${SKYBLUE}地址 (Address):${PLAIN} ${domain}"
         echo -e "${SKYBLUE}端口 (Port):${PLAIN} 443"
-        echo -e "${SKYBLUE}用户 ID (UUID):${PLAIN} ${UUID}"
-        echo -e "${SKYBLUE}传输协议 (Network):${PLAIN} ws"
-        echo -e "${SKYBLUE}伪装域名 (Host):${PLAIN} ${ARGO_DOMAIN}"
-        echo -e "${SKYBLUE}路径 (Path):${PLAIN} ${WS_PATH}"
-        echo -e "${SKYBLUE}TLS (Security):${PLAIN} tls"
-        echo -e "${SKYBLUE}VLESS 加密:${PLAIN} none"
+        echo -e "${SKYBLUE}UUID:${PLAIN} ${uuid}"
+        echo -e "${SKYBLUE}传输 (Network):${PLAIN} ws"
+        echo -e "${SKYBLUE}路径 (Path):${PLAIN} ${ws_path}"
+        echo -e "${SKYBLUE}TLS:${PLAIN} on"
         echo -e "------------------------------------------------------"
-        echo -e "${GREEN}分享链接 (直接导入客户端):${PLAIN}"
-        echo -e "${YELLOW}${SHARE_LINK}${PLAIN}"
+        echo -e "${GREEN}分享链接:${PLAIN}"
+        echo -e "${YELLOW}${share_link}${PLAIN}"
         echo -e "------------------------------------------------------"
     else
-        echo -e "${YELLOW}未配置域名，请手动在客户端补全 Tunnel 域名信息。${PLAIN}"
-        echo -e "本地监听端口: ${PORT}"
-        echo -e "UUID: ${UUID}"
-        echo -e "WS 路径: ${WS_PATH}"
+        echo -e "${YELLOW}未提供域名，无法生成完整链接。请在客户端手动填写 Tunnel 域名。${PLAIN}"
+        echo -e "本地监听端口: $port | Path: $ws_path | UUID: $uuid"
     fi
+}
 
+# ==========================================
+# 2. 手动模式 (Manual Menu)
+# ==========================================
+
+manual_menu() {
+    echo -e "${GREEN}>>> [Sing-box] 智能添加节点: VLESS + WS (Tunnel) ...${PLAIN}"
+    get_config_path
+    
+    # 依赖检查
+    if ! command -v jq &> /dev/null; then if [ -f /etc/debian_version ]; then apt update -y && apt install -y jq; fi; fi
+
+    # 交互输入
+    while true; do
+        read -p "请输入监听端口 (推荐 8080): " c_port
+        [[ -z "$c_port" ]] && c_port=8080 && break
+        if [[ "$c_port" =~ ^[0-9]+$ ]] && [ "$c_port" -le 65535 ]; then break; else echo -e "${RED}无效端口${PLAIN}"; fi
+    done
+
+    read -p "请输入 WebSocket 路径 (默认 /ws): " c_path
+    [[ -z "$c_path" ]] && c_path="/ws"
+    if [[ "${c_path:0:1}" != "/" ]]; then c_path="/$c_path"; fi
+
+    local uuid=$($SB_BIN generate uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
+
+    # 执行写入
+    if write_node_config "$c_port" "$c_path" "$uuid"; then
+        # 尝试自动抓取域名 (TryCloudflare)
+        local auto_domain=$(journalctl -u cloudflared --no-pager 2>/dev/null | grep -o 'https://.*\.trycloudflare\.com' | tail -n 1 | sed 's/https:\/\///')
+        
+        if [[ -z "$auto_domain" ]]; then
+             echo -e "${YELLOW}提示：未自动抓取到临时域名。${PLAIN}"
+             read -p "请输入您的 Cloudflare Tunnel 域名 (回车跳过): " m_domain
+             auto_domain=$m_domain
+        fi
+        
+        print_info "$c_port" "$c_path" "$uuid" "$auto_domain"
+    fi
+}
+
+# ==========================================
+# 3. 自动模式 (Auto Main)
+# ==========================================
+
+auto_main() {
+    echo -e "${GREEN}>>> [SB-Tunnel] 启动自动化部署...${PLAIN}"
+    get_config_path
+    
+    # 从环境变量读取
+    local port="${SB_WS_PORT:-8080}"
+    local path="${SB_WS_PATH:-/ws}"
+    local domain="${ARGO_DOMAIN}" # 由 auto_deploy.sh 传入
+    local uuid=$($SB_BIN generate uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
+
+    if write_node_config "$port" "$path" "$uuid"; then
+        print_info "$port" "$path" "$uuid" "$domain"
+    else
+        echo -e "${RED}[错误] 节点配置写入失败。${PLAIN}"
+        exit 1
+    fi
+}
+
+# ==========================================
+# 入口分流
+# ==========================================
+
+if [[ "$AUTO_SETUP" == "true" ]]; then
+    auto_main
 else
-    echo -e "${RED}Sing-box 启动失败，请检查配置文件格式。${PLAIN}"
+    manual_menu
 fi
