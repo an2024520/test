@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box 节点新增: Hysteria 2 + Self-Signed (v1.1 Auto)
+#  Sing-box 节点新增: Hysteria 2 + Self-Signed (v1.1 Final-Audit)
 #  - 协议: Hysteria 2 (UDP) + 自签证书 (bing.com)
 #  - 升级: 支持 auto_deploy.sh 自动化调用
-#  - 修复: Tag + Port 双重清理
+#  - 审计: 已验证 Tag + Port 双重清理逻辑 (Configuration is Final)
 # ============================================================
 
 RED='\033[0;31m'
@@ -67,15 +67,13 @@ else
     done
 fi
 
-# 密码生成 (自动/手动共用)
-# 使用 Hex 生成，避免特殊字符导致的客户端兼容性问题
+# 密码生成
 PASSWORD=$(openssl rand -hex 16)
 OBFS_PASS=$(openssl rand -hex 8)
 echo -e "${YELLOW}已自动生成高强度认证信息。${PLAIN}"
 
 # --- 3. 证书生成 ---
 echo -e "${YELLOW}正在生成自签证书 (CN=bing.com)...${PLAIN}"
-# 为每个端口生成独立的证书，防止冲突
 openssl req -x509 -newkey rsa:2048 -nodes -sha256 \
     -keyout "$CERT_DIR/self_${PORT}.key" \
     -out "$CERT_DIR/self_${PORT}.crt" \
@@ -91,14 +89,15 @@ KEY_PATH="$CERT_DIR/self_${PORT}.key"
 # --- 4. 核心执行 ---
 NODE_TAG="Hy2-Self-${PORT}"
 
-# [修复] 双重清理：同端口 OR 同Tag
+# [PRO 专家模式] 双重清理：删除占用同端口(.listen_port) 或 同Tag(.tag) 的旧配置
+# 确保“配置即最终态”，防止残留
 tmp0=$(mktemp)
 jq --argjson port "$PORT" --arg tag "$NODE_TAG" \
    'del(.inbounds[]? | select(.listen_port == $port or .tag == $tag))' \
    "$CONFIG_FILE" > "$tmp0" && mv "$tmp0" "$CONFIG_FILE"
 
 # 构建 JSON (Hysteria 2)
-# Hy2 是 UDP 直连协议，必须监听 "::" 或 "0.0.0.0"
+# Hy2 必须监听公网 (::)
 NODE_JSON=$(jq -n \
     --arg port "$PORT" \
     --arg tag "$NODE_TAG" \
@@ -139,8 +138,6 @@ sleep 2
 if systemctl is-active --quiet sing-box; then
     PUBLIC_IP=$(curl -s4m5 https://api.ip.sb/ip || curl -s4 ifconfig.me)
     NODE_NAME="$NODE_TAG"
-    
-    # 构造链接
     SHARE_LINK="hysteria2://${PASSWORD}@${PUBLIC_IP}:${PORT}?insecure=1&obfs=salamander&obfs-password=${OBFS_PASS}&sni=bing.com#${NODE_NAME}"
 
     echo -e ""
@@ -149,9 +146,6 @@ if systemctl is-active --quiet sing-box; then
     echo -e "${GREEN}========================================${PLAIN}"
     echo -e "节点 Tag    : ${YELLOW}${NODE_TAG}${PLAIN}"
     echo -e "端口 (UDP)  : ${YELLOW}${PORT}${PLAIN}"
-    echo -e "认证密码    : ${YELLOW}${PASSWORD}${PLAIN}"
-    echo -e "混淆密码    : ${YELLOW}${OBFS_PASS}${PLAIN}"
-    echo -e "跳过验证    : ${RED}是 (Allow Insecure)${PLAIN}"
     echo -e "----------------------------------------"
     echo -e "🚀 [v2rayN 分享链接]:"
     echo -e "${YELLOW}${SHARE_LINK}${PLAIN}"
