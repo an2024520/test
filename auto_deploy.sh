@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================
-#  Commander Auto-Deploy (v6.1 WARP-Modes-Complete)
+#  Commander Auto-Deploy (v6.2 Final-Hint)
 #  - 核心特性: 超市选购模式 | 核心/WARP/Argo 模块化组装
 #  - 修正: 目录清理逻辑简化 (只保留自身)
-#  - 新增: WARP 双栈全局模式 & 纯流媒体模式
+#  - 优化: WARP IPv6 输入增加格式示例提示
 # ============================================================
 
 # --- 基础定义 ---
@@ -247,7 +247,8 @@ menu_warp() {
                 read -p "   选择: " acc
                 if [[ "$acc" == "2" ]]; then
                     read -p "   Private Key: " k; export WARP_PRIV_KEY="$k"
-                    read -p "   IPv6 Address: " i; export WARP_IPV6="$i"
+                    # [修改点] 增加格式提示，引导用户输入
+                    read -p "   IPv6 Address (例: 2606:xxx...): " i; export WARP_IPV6="$i"
                     read -p "   Reserved [x,x,x]: " r; export WARP_RESERVED="$r"
                 else
                     unset WARP_PRIV_KEY WARP_IPV6 WARP_RESERVED
