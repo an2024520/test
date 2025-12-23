@@ -14,6 +14,28 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
+# =================================================
+# [新增] 自动化模式 - 幂等性检查 (防止重复安装)
+# =================================================
+XRAY_BIN_PATH="/usr/local/bin/xray_core/xray"
+
+# 逻辑：如果是自动模式(AUTO_SETUP=true) 且 二进制文件已存在
+if [[ "$AUTO_SETUP" == "true" ]] && [[ -f "$XRAY_BIN_PATH" ]]; then
+    # 尝试获取当前版本号 (例如 Xray 1.8.4)
+    CURRENT_VER=$($XRAY_BIN_PATH version 2>/dev/null | head -n 1 | awk '{print $2}')
+    
+    echo -e "${GREEN}>>> [自动模式] 检测到 Xray Core (${CURRENT_VER}) 已安装，跳过核心部署。${PLAIN}"
+    
+    # 兜底操作：确保 Systemd 配置重载，防止服务未加载
+    systemctl daemon-reload
+    # 确保服务设置为开机自启
+    systemctl enable xray >/dev/null 2>&1
+    
+    # 核心已就绪，直接退出，保护现有环境不被清理
+    exit 0
+fi
+# =================================================
+
 # 2. 系统环境初始化
 echo -e "${YELLOW}正在初始化系统环境 (依赖安装 & 时间同步)...${PLAIN}"
 apt update -y
