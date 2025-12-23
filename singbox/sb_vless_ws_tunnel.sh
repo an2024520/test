@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box 节点模块: VLESS + WS (Tunnel专用——v1.2 Fix-Crash)
+#  Sing-box 节点模块: VLESS + WS (Tunnel专用)
 #  - 模式: Manual (交互式) / Auto (变量传参)
 #  - 特性: 无 TLS，专用于 CF Tunnel 后端
 #  - 修复: 强化清理逻辑 (Tag + Port 双重清理)
@@ -40,7 +40,6 @@ write_node_config() {
     if [[ ! -f "$CONFIG_FILE" ]]; then mkdir -p "$CONFIG_DIR"; echo '{"inbounds":[],"outbounds":[]}' > "$CONFIG_FILE"; fi
     
     # 2. [关键修复] 双重清理：删除 同端口 OR 同Tag 的旧节点
-    # 防止因 Tag 重复导致 Sing-box 核心启动崩溃
     local tmp_clean=$(mktemp)
     jq --argjson p "$port" --arg tag "$node_tag" \
        'del(.inbounds[]? | select(.listen_port == $p or .tag == $tag))' \
@@ -111,10 +110,6 @@ print_info() {
     fi
 }
 
-# ==========================================
-# 2. 手动模式 (Manual Menu)
-# ==========================================
-
 manual_menu() {
     echo -e "${GREEN}>>> [Sing-box] 智能添加节点: VLESS + WS (Tunnel) ...${PLAIN}"
     get_config_path
@@ -142,10 +137,6 @@ manual_menu() {
         print_info "$c_port" "$c_path" "$uuid" "$auto_domain"
     fi
 }
-
-# ==========================================
-# 3. 自动模式 (Auto Main)
-# ==========================================
 
 auto_main() {
     echo -e "${GREEN}>>> [SB-Tunnel] 启动自动化部署...${PLAIN}"
