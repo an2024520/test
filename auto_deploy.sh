@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================
-#  Commander Auto-Deploy (v6.3 Tunnel-Integrated)
+#  Commander Auto-Deploy (v6.4 Xray-Fix)
 #  - 核心特性: 超市选购模式 | 核心/WARP/Argo 模块化组装
-#  - 新增: 支持 Sing-box VLESS+WS (Tunnel专用) 节点选购
-#  - 联动: 自动将 Argo 域名传递给节点生成分享链接
+#  - 修正: Xray 自动部署时端口传递失效的问题
+#  - 集成: Argo Tunnel + Sing-box 后端联动
 # ============================================================
 
 # --- 基础定义 ---
@@ -79,27 +79,25 @@ deploy_logic() {
         echo -e "${GREEN}>>> [Sing-box] 部署核心...${PLAIN}"
         run "sb_install_core.sh"
         
-        # A. Vision Reality (直连)
+        # A. Vision Reality
         if [[ "$DEPLOY_SB_VISION" == "true" ]]; then
             echo -e "${GREEN}>>> [SB] Vision 节点 (: ${VAR_SB_VISION_PORT})...${PLAIN}"
             PORT=$VAR_SB_VISION_PORT run "sb_vless_vision_reality.sh"
             SB_TAGS_ACC+="Vision-${VAR_SB_VISION_PORT},"
         fi
         
-        # B. WS TLS (直连)
+        # B. WS TLS
         if [[ "$DEPLOY_SB_WS" == "true" ]]; then
              echo -e "${GREEN}>>> [SB] WS TLS 节点 (: ${VAR_SB_WS_PORT})...${PLAIN}"
              PORT=$VAR_SB_WS_PORT run "sb_vless_ws_tls.sh"
              SB_TAGS_ACC+="WS-${VAR_SB_WS_PORT},"
         fi
 
-        # C. WS Tunnel (隧道专用) - [新增]
+        # C. WS Tunnel
         if [[ "$DEPLOY_SB_WS_TUNNEL" == "true" ]]; then
              echo -e "${GREEN}>>> [SB] WS Tunnel 节点 (: ${VAR_SB_WS_TUNNEL_PORT})...${PLAIN}"
-             # 导出特定变量给子脚本
              export SB_WS_PORT="$VAR_SB_WS_TUNNEL_PORT"
              export SB_WS_PATH="$VAR_SB_WS_TUNNEL_PATH"
-             # 此时 ARGO_DOMAIN 应该已经在下文中被 Argo 模块定义或预设
              run "sb_vless_ws_tunnel.sh"
              SB_TAGS_ACC+="Tunnel-${VAR_SB_WS_TUNNEL_PORT},"
         fi
@@ -110,9 +108,13 @@ deploy_logic() {
         echo -e "${GREEN}>>> [Xray] 部署核心...${PLAIN}"
         run "xray_core.sh"
         
+        # [Fix] 明确导出 PORT 变量，确保子脚本能读取
         if [[ "$DEPLOY_XRAY_VISION" == "true" ]]; then
             echo -e "${GREEN}>>> [Xray] Vision 节点 (: ${VAR_XRAY_VISION_PORT})...${PLAIN}"
-            PORT=$VAR_XRAY_VISION_PORT run "xray_vless_vision_reality.sh"
+            export PORT="$VAR_XRAY_VISION_PORT"
+            run "xray_vless_vision_reality.sh"
+            # 用完最好 unset，防止干扰后续（虽然这里逻辑是线性的）
+            unset PORT
             XRAY_TAGS_ACC+="Vision-${VAR_XRAY_VISION_PORT},"
         fi
     fi
@@ -137,7 +139,6 @@ deploy_logic() {
     # === 4. Argo ===
     if [[ "$INSTALL_ARGO" == "true" ]]; then
         echo -e "${GREEN}>>> [Argo] 配置 Tunnel...${PLAIN}"
-        # 注意: 如果选了 Tunnel 节点但没填 Argo Token, 安装脚本会报错或交互
         run "install_cf_tunnel_debian.sh"
     fi
 
@@ -166,7 +167,7 @@ show_dashboard() {
         echo -e "${YELLOW}● Sing-box Core${PLAIN}"
         [[ "$DEPLOY_SB_VISION" == "true" ]]     && echo -e "  ├─ Vision Reality  [Port: ${GREEN}$VAR_SB_VISION_PORT${PLAIN}]"
         [[ "$DEPLOY_SB_WS" == "true" ]]         && echo -e "  ├─ VLESS WS TLS    [Port: ${GREEN}$VAR_SB_WS_PORT${PLAIN}]"
-        [[ "$DEPLOY_SB_WS_TUNNEL" == "true" ]]  && echo -e "  └─ VLESS WS Tunnel [Port: ${GREEN}$VAR_SB_WS_TUNNEL_PORT${PLAIN}] Path: ${SKYBLUE}$VAR_SB_WS_TUNNEL_PATH${PLAIN}"
+        [[ "$DEPLOY_SB_WS_TUNNEL" == "true" ]]  && echo -e "  └─ VLESS WS Tunnel [Port: ${GREEN}$VAR_SB_WS_TUNNEL_PORT${PLAIN}]"
         has_item=true
     fi
     
@@ -212,9 +213,9 @@ show_dashboard() {
 menu_protocols() {
     while true; do
         clear; echo -e "${SKYBLUE}=== 协议选择 ===${PLAIN}"
-        echo -e " 1. [$(get_status $DEPLOY_SB_VISION)] Sing-box Vision Reality (直连)"
-        echo -e " 2. [$(get_status $DEPLOY_XRAY_VISION)] Xray Vision Reality (直连)"
-        echo -e " 3. [$(get_status $DEPLOY_SB_WS_TUNNEL)] Sing-box VLESS+WS (Tunnel专用)"
+        echo -e " 1. [$(get_status $DEPLOY_SB_VISION)] Sing-box Vision Reality"
+        echo -e " 2. [$(get_status $DEPLOY_XRAY_VISION)] Xray Vision Reality"
+        echo -e " 3. [$(get_status $DEPLOY_SB_WS_TUNNEL)] Sing-box VLESS+WS (Tunnel)"
         echo ""
         echo -e " 0. 返回"
         read -p "选择: " c
@@ -238,15 +239,13 @@ menu_protocols() {
                     DEPLOY_SB_WS_TUNNEL=false
                 else
                     DEPLOY_SB_WS_TUNNEL=true; INSTALL_SB=true
-                    read -p "监听端口(8080): " p; VAR_SB_WS_TUNNEL_PORT="${p:-8080}"
-                    read -p "WS路径(/ws): " pa; VAR_SB_WS_TUNNEL_PATH="${pa:-/ws}"
-                    
-                    # 联动提示: 建议开启 Argo
+                    read -p "端口(8080): " p; VAR_SB_WS_TUNNEL_PORT="${p:-8080}"
+                    read -p "Path(/ws): " pa; VAR_SB_WS_TUNNEL_PATH="${pa:-/ws}"
                     if [[ "$INSTALL_ARGO" != "true" ]]; then
-                        echo -e "${YELLOW}提示: 该节点通常配合 Argo Tunnel 使用，已自动为您加入 Argo。${PLAIN}"
+                        echo -e "${YELLOW}提示: 建议同时开启 Argo Tunnel。${PLAIN}"
                         INSTALL_ARGO=true
-                        read -p "请输入 Argo Token: " t; export ARGO_AUTH="$t"
-                        read -p "请输入 Argo 域名: " d; export ARGO_DOMAIN="$d"
+                        read -p "Argo Token: " t; export ARGO_AUTH="$t"
+                        read -p "Argo Domain: " d; export ARGO_DOMAIN="$d"
                     fi
                 fi ;;
             0) break ;;
