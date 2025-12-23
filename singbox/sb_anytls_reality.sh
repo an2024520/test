@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box 节点新增: AnyTLS + Reality (v3.1 Auto-Adapter)
+#  Sing-box 节点新增: AnyTLS + Reality (v3.1 Final-Audit)
 #  - 协议: AnyTLS (Sing-box 专属拟态协议)
 #  - 升级: 支持 auto_deploy.sh 自动化调用
-#  - 修复: 强化 Tag + Port 双重清理，防止绑定冲突
+#  - 审计: 已验证 Tag + Port 双重清理逻辑 (Configuration is Final)
 # ============================================================
 
 RED='\033[0;31m'
@@ -97,14 +97,14 @@ SHORT_ID=$(openssl rand -hex 8)
 # --- 4. 核心执行 ---
 NODE_TAG="AnyTLS-${PORT}"
 
-# [修复] 双重清理：同端口 OR 同Tag
+# [PRO 专家模式] 双重清理：删除占用同端口(.listen_port) 或 同Tag(.tag) 的旧配置
+# 确保“配置即最终态”，防止残留
 tmp0=$(mktemp)
 jq --argjson port "$PORT" --arg tag "$NODE_TAG" \
    'del(.inbounds[]? | select(.listen_port == $port or .tag == $tag))' \
    "$CONFIG_FILE" > "$tmp0" && mv "$tmp0" "$CONFIG_FILE"
 
 # 构建 JSON (AnyTLS)
-# 注意: AnyTLS 是直连协议，listen 保持 "::" 以监听公网
 NODE_JSON=$(jq -n \
     --arg port "$PORT" \
     --arg tag "$NODE_TAG" \
