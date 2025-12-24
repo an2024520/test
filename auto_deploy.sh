@@ -13,6 +13,68 @@ RED='\033[0;31m'
 PLAIN='\033[0m'
 GRAY='\033[0;37m'
 
+# ============================================================
+#  GitHub Proxy Injector (Interactive Mode)
+#  功能: 交互式询问是否启用 Worker 代理，并自动劫持 curl/wget
+# ============================================================
+
+# 1. 询问用户
+echo -e "${YELLOW}======================================================${PLAIN}"
+echo -e "${YELLOW} 是否使用 Cloudflare Worker 代理加速 GitHub 请求?${PLAIN}"
+echo -e "${GRAY} (示例: https://my-worker.dev/ ) -- 务必以 https 开头${PLAIN}"
+read -p "请输入代理链接 (默认为空/不使用，直接回车): " input_proxy
+
+# 2. 判断逻辑
+if [[ -n "$input_proxy" ]]; then
+    # 简单的格式修正：确保以 / 结尾
+    if [[ "$input_proxy" != */ ]]; then
+        input_proxy="${input_proxy}/"
+    fi
+    
+    export GH_PROXY_URL="$input_proxy"
+    echo -e "${GREEN}>>> 已启用代理模式，目标: ${GH_PROXY_URL}${PLAIN}"
+
+    # 3. 定义劫持函数 (仅在启用代理时生效)
+    function curl() {
+        local args=()
+        for arg in "$@"; do
+            # 匹配 github.com 相关域名
+            if [[ "$arg" =~ ^https?://([a-zA-Z0-9-]+\.)?github(usercontent)?\.com ]]; then
+                # 防止重复套娃 (检查 URL 是否已经包含了代理地址)
+                if [[ "$arg" != *"$GH_PROXY_URL"* ]]; then
+                    arg="${GH_PROXY_URL}${arg}"
+                fi
+            fi
+            args+=("$arg")
+        done
+        command curl "${args[@]}"
+    }
+
+    function wget() {
+        local args=()
+        for arg in "$@"; do
+            if [[ "$arg" =~ ^https?://([a-zA-Z0-9-]+\.)?github(usercontent)?\.com ]]; then
+                if [[ "$arg" != *"$GH_PROXY_URL"* ]]; then
+                    arg="${GH_PROXY_URL}${arg}"
+                fi
+            fi
+            args+=("$arg")
+        done
+        command wget "${args[@]}"
+    }
+
+    # 4. 导出函数供子脚本继承
+    export -f curl
+    export -f wget
+else
+    echo -e "${GRAY}>>> 未输入代理，将使用直连模式 (Direct Mode)。${PLAIN}"
+fi
+echo -e "${YELLOW}======================================================${PLAIN}"
+echo ""
+# ============================================================
+
+
+
 URL_LIST="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/sh_url.txt"
 LOCAL_LIST="/tmp/sh_url.txt"
 
