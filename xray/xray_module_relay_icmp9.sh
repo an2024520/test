@@ -178,7 +178,7 @@ inject_config() {
 
         # 4.2 生成出站 (Outbound) - 始终连接 ICMP9 远端 (VMess)
         jq -n \
-           --arg tag "$TAG_OUT" --arg host "$R_HOST" --arg port "$R_PORT" \
+           --arg tag "$TAG_OUT" --arg host "$R_WSHOST" --arg port "$R_PORT" \
            --arg uuid "$REMOTE_UUID" --arg wshost "$R_WSHOST" --arg tls "$R_TLS" --arg path "$PATH_OUT" \
            '{
               "tag": $tag, "protocol": "vmess",
