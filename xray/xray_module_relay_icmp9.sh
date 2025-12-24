@@ -269,6 +269,7 @@ finish_setup() {
         echo "$CLEAN_LINK" >> /root/xray_nodes2.txt
         # =======================
     done
+    echo "请查看cat /root/xray_nodes2.txt"
     rm -f /tmp/uuid_map.txt
     echo -e "------------------------------------------------------"
 }
