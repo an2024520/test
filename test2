@@ -12,4 +12,4 @@ grep "ClientAlive" /etc/ssh/sshd_config
 #前端模拟活跃：在 WEB SSH 窗口中运行一个类似 top、htop 或者简单的循环脚本，
 #让屏幕每隔几秒就有字符输出，欺骗中间代理认为连接一直活跃。
 # 每 20 秒打印一个空格（或日期），防止断开
-#while true; do date; sleep 20; done
+while true; do date; sleep 20; done
