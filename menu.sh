@@ -1,12 +1,13 @@
 #!/bin/bash
 
 # ============================================================
-#  全能协议管理中心 (Commander v4.2 Strict IPv6)
+#  全能协议管理中心 (Commander v4.3 IPv6 Strict)
 #  - 架构: Xray / Sing-box / Hy2 / Tools 纵向分流
-#  - 升级: 引入严格的 IPv4 可用性检测 (基于 Public IP)
+#  - 升级: 引入严格 IPv4 检测 (ip.sb) + DNS 自动修复
+#  - 纯净: 移除内置代理，适配用户自定义 Worker 环境
 # ============================================================
 
-# ... [保留原有的颜色定义] ...
+# 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -14,12 +15,14 @@ SKYBLUE='\033[0;36m'
 PLAIN='\033[0m'
 GRAY='\033[0;37m'
 BLUE='\033[0;34m'
-PURPLE='\033[0;35m'
 
-# ... [保留文件映射变量] ...
+# ==========================================
+# 1. 核心配置
+# ==========================================
 URL_LIST_FILE="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/sh_url.txt"
 LOCAL_LIST_FILE="/tmp/sh_url.txt"
 
+# ... [文件名映射保持不变，省略以节省篇幅，请保留原文件中的定义] ...
 FILE_XRAY_CORE="xray_core.sh"
 FILE_XRAY_UNINSTALL="xray_uninstall_all.sh"
 FILE_ADD_XHTTP="xray_vless_xhttp_reality.sh"
@@ -48,27 +51,27 @@ FILE_CF_TUNNEL="install_cf_tunnel_debian.sh"
 FILE_FIX_IPV6="fix_ipv6_dual_core.sh"
 
 # ==========================================
-# 2. 引擎函数 (Updated)
+# 2. 引擎函数 (Strict Mode)
 # ==========================================
 
 check_ipv6_environment() {
     echo -e "${YELLOW}正在执行严格的网络环境检测...${PLAIN}"
     
-    # 严格模式: 尝试获取公网 IPv4 地址。
-    # 只有当 curl 成功返回且内容符合 IPv4 格式时，才认为有 IPv4。
-    # -m 5: 最多等待 5 秒，防止劣质 NAT64 卡死
+    # 严格模式: 尝试获取公网 IPv4 地址
+    # -m 5: 超时 5 秒，防止劣质 NAT64 长期挂起
     local ipv4_check=$(curl -4 -s -m 5 http://ip.sb 2>/dev/null)
     
+    # 正则校验是否为合法 IP
     if [[ "$ipv4_check" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         echo -e "${GREEN}IPv4 连接确认有效 (IP: $ipv4_check)。${PLAIN}"
         return
     fi
 
     echo -e "${YELLOW}======================================================${PLAIN}"
-    echo -e "${RED}⚠️  检测到纯 IPv6 环境 (IPv4 无法获取公网 IP)${PLAIN}"
-    echo -e "${GRAY}可能是 IPv6-Only 机器，或 NAT64 极不稳定。${PLAIN}"
-    echo -e "${GRAY}即将配置 Google/Cloudflare IPv6 DNS 以确保稳定性。${PLAIN}"
+    echo -e "${RED}⚠️  检测到纯 IPv6 环境 (无法获取 IPv4 公网地址)${PLAIN}"
+    echo -e "${GRAY}系统将配置 Google/Cloudflare IPv6 DNS 以确保连通性。${PLAIN}"
     
+    # 备份现有 DNS
     if [[ ! -f /etc/resolv.conf.bak ]]; then
         cp /etc/resolv.conf /etc/resolv.conf.bak
     fi
@@ -83,18 +86,18 @@ nameserver 2001:4860:4860::8844
 nameserver 2606:4700:4700::1001
 EOF
 
+    # 锁定防止 DHCP 覆盖
     chattr +i /etc/resolv.conf >/dev/null 2>&1
     
-    # 复测
+    # 复测 IPv6 连通性
     if curl -6 -s -m 5 https://www.google.com >/dev/null 2>&1; then
         echo -e "${GREEN}IPv6 环境优化完成。${PLAIN}"
     else
-        echo -e "${RED}警告: DNS 已更新但 IPv6 网络似乎仍不可达，请检查网关。${PLAIN}"
+        echo -e "${RED}警告: DNS 已更新但网络似乎仍不可达，请检查 IPv6 网关。${PLAIN}"
         sleep 2
     fi
 }
 
-# ... [保留原有的 check_dir_clean, init_urls, check_run 等函数] ...
 check_dir_clean() {
     local current_script=$(basename "$0")
     local file_count=$(ls -1 | grep -v "^$current_script$" | wc -l)
@@ -113,9 +116,8 @@ check_dir_clean() {
 
 init_urls() {
     echo -e "${YELLOW}正在同步脚本列表...${PLAIN}"
-    # 使用支持 IPv6 的 GitHub 代理前缀，防止纯 IPv6 环境无法下载
-    GH_PROXY="https://ghp.ci/"
-    wget -T 15 -t 3 -qO "$LOCAL_LIST_FILE" "${GH_PROXY}${URL_LIST_FILE}?t=$(date +%s)"
+    # 使用标准链接，依赖用户 Worker 环境自动重写
+    wget -T 15 -t 3 -qO "$LOCAL_LIST_FILE" "${URL_LIST_FILE}?t=$(date +%s)"
     if [[ $? -ne 0 ]]; then
         [[ -f "$LOCAL_LIST_FILE" ]] && echo -e "${YELLOW}网络异常，使用缓存列表。${PLAIN}" || { echo -e "${RED}错误: 无法获取列表。${PLAIN}"; exit 1; }
     else
@@ -135,12 +137,7 @@ check_run() {
         local script_url=$(get_url_by_name "$script_name")
         [[ -z "$script_url" ]] && { echo -e "${RED}错误: sh_url.txt 未找到记录。${PLAIN}"; read -p "按回车继续..."; return; }
         
-        # 自动添加代理
-        GH_PROXY="https://ghp.ci/"
-        if [[ "$script_url" == *"github"* ]] && [[ "$script_url" != *"$GH_PROXY"* ]]; then
-            script_url="${GH_PROXY}${script_url}"
-        fi
-
+        # 标准下载，不注入代理
         wget -qO "$script_name" "${script_url}?t=$(date +%s)"
         [[ $? -ne 0 ]] && { echo -e "${RED}下载失败。${PLAIN}"; read -p "按回车继续..."; return; }
         chmod +x "$script_name"
@@ -149,7 +146,9 @@ check_run() {
     [[ "$no_pause" != "true" ]] && { echo -e ""; read -p "操作结束，按回车键继续..."; }
 }
 
-# ... [保留所有 menu_xray, menu_singbox 等菜单函数不变] ...
+# ... [后续所有菜单函数 menu_xray, menu_singbox 等保持原样不变] ...
+# ... [为了节省你的复制时间，此处省略中间的菜单代码，请直接使用你原来的菜单逻辑] ...
+
 menu_xray() {
     while true; do
         clear
@@ -240,7 +239,7 @@ show_main_menu() {
     while true; do
         clear
         echo -e "${GREEN}============================================${PLAIN}"
-        echo -e "${GREEN}      全能协议管理中心 (Commander v4.2)      ${PLAIN}"
+        echo -e "${GREEN}      全能协议管理中心 (Commander v4.3)      ${PLAIN}"
         echo -e "${GREEN}============================================${PLAIN}"
         
         STATUS_TEXT=""
