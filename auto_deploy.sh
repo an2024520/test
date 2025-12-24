@@ -1,8 +1,7 @@
 #!/bin/bash
 # ============================================================
-#  Commander Auto-Deploy (v7.0 IPv6 Enhanced)
-#  - 核心特性: 超市选购模式 | 核心/WARP/Argo 模块化组装
-#  - 升级: 集成智能 IPv6 环境检测与 DNS 优化
+#  Commander Auto-Deploy (v7.2 Strict Pure)
+#  - 特性: 严格 IP 检测 | 纯净 URL (适配 Worker)
 # ============================================================
 
 # --- 基础定义 ---
@@ -17,19 +16,22 @@ URL_LIST="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/sh_ur
 LOCAL_LIST="/tmp/sh_url.txt"
 
 # ============================================================
-#  0. 环境预处理 (Environment Prep)
+#  0. 环境预处理
 # ============================================================
 
 check_ipv6_environment() {
-    # 仅在需要下载前检查环境
-    echo -e "${YELLOW}>>> [环境自检] 检测网络连通性...${PLAIN}"
-    if curl -4 -s --connect-timeout 3 https://1.1.1.1 >/dev/null 2>&1; then
+    echo -e "${YELLOW}>>> [环境自检] 检测网络连通性 (Strict Mode)...${PLAIN}"
+    
+    # 尝试获取 IPv4 公网地址 (严格模式)
+    local ipv4_check=$(curl -4 -s -m 5 http://ip.sb 2>/dev/null)
+    
+    # 正则校验
+    if [[ "$ipv4_check" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         return
     fi
 
-    echo -e "${YELLOW}>>> 检测到 IPv6-Only 环境，正在优化 DNS 配置...${PLAIN}"
+    echo -e "${YELLOW}>>> 检测到纯 IPv6 环境 (无法获取 IPv4)，正在优化 DNS...${PLAIN}"
     
-    # 备份并重写 DNS 为 Google/CF (移除不稳定的 NAT64)
     if [[ ! -f /etc/resolv.conf.bak ]]; then
         cp /etc/resolv.conf /etc/resolv.conf.bak
     fi
@@ -68,12 +70,12 @@ check_dir_clean() {
 }
 
 # ============================================================
-#  1. 执行引擎 (Backend Executor)
+#  1. 执行引擎
 # ============================================================
 
 init_urls() {
-    # 在下载 URL 列表前，确保网络环境已优化
     check_ipv6_environment
+    # 纯净 URL，不做代理
     wget -qO "$LOCAL_LIST" "$URL_LIST"
 }
 
@@ -86,12 +88,14 @@ run() {
             echo -e "${RED}[错误] 无法找到脚本: $script${PLAIN}"
             return 1
         fi
+        
         echo -e "   > 下载: $script ..."
         wget -qO "$script" "$url" && chmod +x "$script"
     fi
     ./"$script"
 }
 
+# ... [保留原有的 deploy_logic 及后续逻辑] ...
 deploy_logic() {
     clear
     echo -e "${GREEN}>>> 正在处理您的订单 (开始部署)...${PLAIN}"
