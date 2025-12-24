@@ -40,7 +40,7 @@ fi
 echo -e "${YELLOW}正在初始化系统环境 (依赖安装 & 时间同步)...${PLAIN}"
 apt update -y
 # 安装基础工具 + 时间同步服务(chrony)
-apt install -y curl wget jq openssl unzip chrony
+apt install -y curl wget jq openssl unzip chrony ca-certificates
 
 # 强制立即同步时间 (Xray 对时间极其敏感，误差不能超过90秒)
 echo -e "${YELLOW}正在同步系统时间...${PLAIN}"
@@ -83,7 +83,7 @@ fi
 echo -e "${GREEN}即将安装版本: ${LATEST_VERSION}${PLAIN}"
 DOWNLOAD_URL="https://github.com/XTLS/Xray-core/releases/download/${LATEST_VERSION}/Xray-linux-${XRAY_ARCH}.zip"
 
-wget -O /tmp/xray.zip "$DOWNLOAD_URL"
+wget --no-check-certificate -O /tmp/xray.zip "$DOWNLOAD_URL"
 if [ $? -ne 0 ]; then
     echo -e "${RED}下载失败！${PLAIN}"
     exit 1
