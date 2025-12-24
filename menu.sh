@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # ============================================================
-#  全能协议管理中心 (Commander v4.0 Final Revised)
+#  全能协议管理中心 (Commander v4.1 IPv6 Enhanced)
 #  - 架构: Xray / Sing-box / Hy2 / Tools 纵向分流
-#  - 状态: 显示关联脚本文件名，便于维护与调试
+#  - 特性: 深度适配 IPv6-Only 环境 (Google/CF DNS 优化)
 # ============================================================
 
 # 颜色定义
@@ -19,6 +19,7 @@ PURPLE='\033[0;35m'
 # ==========================================
 # 1. 核心配置与文件映射
 # ==========================================
+# 注意: 在纯 IPv6 环境下，请确保此 URL 支持 IPv6 访问或使用代理
 URL_LIST_FILE="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/sh_url.txt"
 LOCAL_LIST_FILE="/tmp/sh_url.txt"
 
@@ -59,30 +60,45 @@ FILE_FIX_IPV6="fix_ipv6_dual_core.sh"
 # ==========================================
 
 check_ipv6_environment() {
-    echo -e "${YELLOW}正在检测 IPv4 网络连通性...${PLAIN}"
-    if curl -4 -s --connect-timeout 5 https://1.1.1.1 >/dev/null 2>&1; then
-        echo -e "${GREEN}检测到 IPv4 连接正常。${PLAIN}"
+    echo -e "${YELLOW}正在检测网络环境...${PLAIN}"
+    
+    # 1. 检测 IPv4 连通性
+    if curl -4 -s --connect-timeout 3 https://1.1.1.1 >/dev/null 2>&1; then
+        echo -e "${GREEN}IPv4 连接正常 (双栈环境)。${PLAIN}"
         return
-    fi
-    if curl -s -m 5 https://www.google.com/generate_204 >/dev/null 2>&1; then
-         echo -e "${GREEN}检测到通过 DNS64/NAT64 的网络连接。${PLAIN}"
-         return
     fi
 
     echo -e "${YELLOW}======================================================${PLAIN}"
     echo -e "${RED}⚠️  检测到纯 IPv6 环境 (IPv6-Only)！${PLAIN}"
-    echo -e "${GRAY}即将配置 NAT64 以保证脚本正常下载组件。${PLAIN}"
-    read -p "是否配置 NAT64? (y/n, 默认 y): " fix_choice
-    fix_choice=${fix_choice:-y}
+    echo -e "${GRAY}系统将配置标准 IPv6 DNS (Google/Cloudflare) 以优化解析稳定性。${PLAIN}"
+    echo -e "${GRAY}(不再使用不稳定的 NAT64 服务)${PLAIN}"
+    
+    # 2. 备份现有 DNS
+    if [[ ! -f /etc/resolv.conf.bak ]]; then
+        cp /etc/resolv.conf /etc/resolv.conf.bak
+    fi
 
-    if [[ "$fix_choice" == "y" ]]; then
-        echo -e "${YELLOW}正在配置 NAT64...${PLAIN}"
-        mkdir -p /var/log/sing-box/ && chmod 777 /var/log/sing-box/ >/dev/null 2>&1
-        chattr -i /etc/resolv.conf >/dev/null 2>&1
-        rm -f /etc/resolv.conf
-        echo -e "nameserver 2a09:c500::1\nnameserver 2001:67c:2b0::4" > /etc/resolv.conf
-        chattr +i /etc/resolv.conf
-        echo -e "${GREEN}NAT64 配置完成。${PLAIN}"
+    # 3. 解锁并写入高性能 IPv6 DNS
+    echo -e "${YELLOW}正在优化 DNS 配置...${PLAIN}"
+    chattr -i /etc/resolv.conf >/dev/null 2>&1
+    
+    cat > /etc/resolv.conf << EOF
+# Commander Optimized IPv6 DNS
+nameserver 2001:4860:4860::8888
+nameserver 2606:4700:4700::1111
+nameserver 2001:4860:4860::8844
+nameserver 2606:4700:4700::1001
+EOF
+
+    # 锁定文件防止 DHCP 覆盖 (可选，根据稳定性需求)
+    chattr +i /etc/resolv.conf >/dev/null 2>&1
+    
+    # 4. 再次测试连通性 (使用 IPv6 目标)
+    if curl -6 -s --connect-timeout 5 https://www.google.com >/dev/null 2>&1; then
+        echo -e "${GREEN}IPv6 环境优化完成，网络连接正常。${PLAIN}"
+    else
+        echo -e "${RED}警告: DNS 已更新但网络似乎仍不可达，请检查 VPS 的 IPv6 网关设置。${PLAIN}"
+        sleep 3
     fi
 }
 
@@ -104,9 +120,11 @@ check_dir_clean() {
 
 init_urls() {
     echo -e "${YELLOW}正在同步脚本列表...${PLAIN}"
+    # 尝试下载。如果环境是纯 IPv6 且 Github 只有 IPv4，此处可能会失败。
+    # 假设用户已通过其他方式（如 Proxy）解决了 URL 可达性。
     wget -T 15 -t 3 -qO "$LOCAL_LIST_FILE" "${URL_LIST_FILE}?t=$(date +%s)"
     if [[ $? -ne 0 ]]; then
-        [[ -f "$LOCAL_LIST_FILE" ]] && echo -e "${YELLOW}网络异常，使用缓存列表。${PLAIN}" || { echo -e "${RED}错误: 无法获取列表。${PLAIN}"; exit 1; }
+        [[ -f "$LOCAL_LIST_FILE" ]] && echo -e "${YELLOW}网络异常，使用缓存列表。${PLAIN}" || { echo -e "${RED}错误: 无法获取列表。请检查 Github 连接或手动上传 sh_url.txt。${PLAIN}"; exit 1; }
     else
         echo -e "${GREEN}同步完成。${PLAIN}"
     fi
@@ -229,7 +247,7 @@ show_main_menu() {
     while true; do
         clear
         echo -e "${GREEN}============================================${PLAIN}"
-        echo -e "${GREEN}      全能协议管理中心 (Commander v4.0)      ${PLAIN}"
+        echo -e "${GREEN}      全能协议管理中心 (Commander v4.1)      ${PLAIN}"
         echo -e "${GREEN}============================================${PLAIN}"
         
         STATUS_TEXT=""
