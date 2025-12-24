@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  ICMP9 中转扩展模块 [VLESS 进阶版] (Relay Extension Pro)
-#  架构: VLESS(In) -> Routing -> VMess(Out)
-#  优化: 针对低配 VPS (1核256M) 优化，降低解密开销
-#  场景: 专为 Cloudflare Tunnel (Argo) 设计
+#  ICMP9 中转扩展模块 (Commander v4.1 Adaptive)
+#  - 架构: VLESS (入站) -> Routing -> VMess (出站)
+#  - 适配: 自动识别 IPv4/IPv6 双栈或单栈环境
+#  - 依赖: 需配合 Argo 隧道使用
 # ============================================================
 
 # 颜色定义
@@ -14,265 +14,190 @@ YELLOW='\033[0;33m'
 SKYBLUE='\033[0;36m'
 PLAIN='\033[0m'
 
-# 核心路径
+# 核心路径与 API
 CONFIG_FILE="/usr/local/etc/xray/config.json"
 BACKUP_FILE="/usr/local/etc/xray/config.json.bak"
-
-# API 接口
 API_CONFIG="https://api.icmp9.com/config/config.txt"
 API_NODES="https://api.icmp9.com/online.php"
 
-# 权限检查
-if [[ $EUID -ne 0 ]]; then
-    echo -e "${RED}错误: 请使用 root 权限运行此脚本！${PLAIN}"
-    exit 1
-fi
+# ============================================================
+# 1. 环境自适应检测
+# ============================================================
+check_env_and_dns() {
+    [[ $EUID -ne 0 ]] && echo -e "${RED}请使用 root 运行${PLAIN}" && exit 1
+    
+    echo -e "${YELLOW}正在检测网络环境...${PLAIN}"
+    local is_ipv6_only=false
+    
+    # 简单的连通性测试
+    if ! curl -4 -s --connect-timeout 2 https://1.1.1.1 >/dev/null 2>&1; then
+        is_ipv6_only=true
+        echo -e "${SKYBLUE}>>> 检测到 IPv6-Only 环境${PLAIN}"
+    else
+        echo -e "${GREEN}>>> 检测到 IPv4/双栈环境${PLAIN}"
+    fi
 
-# 依赖检查
-if ! command -v jq >/dev/null 2>&1; then
-    echo -e "${YELLOW}正在安装依赖 (jq)...${PLAIN}"
-    apt-get update -qq && apt-get install -y jq -qq
-fi
-
-echo -e "${GREEN}>>> [VLESS 中转进阶版] 模块初始化...${PLAIN}"
-echo -e "${SKYBLUE}提示: 本模式采用 VLESS 入站，性能优于 VMess，专为低配机器优化。${PLAIN}"
+    # 验证 DNS 是否正常 (尝试解析 Google)
+    if ! curl -s --connect-timeout 3 https://www.google.com >/dev/null 2>&1; then
+        echo -e "${YELLOW}>>> 网络连接异常，正在尝试修复系统 DNS...${PLAIN}"
+        # 既然 menu.sh 已经切为 Google DNS，这里做兜底修复
+        chattr -i /etc/resolv.conf >/dev/null 2>&1
+        echo -e "nameserver 2001:4860:4860::8888\nnameserver 2606:4700:4700::1111" > /etc/resolv.conf
+        chattr +i /etc/resolv.conf >/dev/null 2>&1
+        echo -e "${GREEN}>>> DNS 修复完成。${PLAIN}"
+    fi
+    
+    # 导出环境变量供后续使用
+    export IS_IPV6_ONLY=$is_ipv6_only
+}
 
 # ============================================================
-# 1. 远程配置获取
+# 2. 交互配置 (Argo 适配)
 # ============================================================
-echo -e "${YELLOW}正在同步 ICMP9 远端配置...${PLAIN}"
-
-RAW_CONFIG=$(curl -s --connect-timeout 10 "$API_CONFIG")
-if [[ -z "$RAW_CONFIG" ]]; then
-    echo -e "${RED}错误: API 连接失败，请检查网络连接。${PLAIN}"
-    exit 1
-fi
-
-# 提取关键连接参数
-REMOTE_HOST=$(echo "$RAW_CONFIG" | grep "^host|" | cut -d'|' -f2 | tr -d '\r\n')
-REMOTE_PORT=$(echo "$RAW_CONFIG" | grep "^port|" | cut -d'|' -f2 | tr -d '\r\n')
-REMOTE_WSHOST=$(echo "$RAW_CONFIG" | grep "^wshost|" | cut -d'|' -f2 | tr -d '\r\n')
-REMOTE_TLS_FLAG=$(echo "$RAW_CONFIG" | grep "^tls|" | cut -d'|' -f2 | tr -d '\r\n')
-
-# 确定后端安全策略
-REMOTE_SECURITY="none"
-[[ "$REMOTE_TLS_FLAG" == "1" ]] && REMOTE_SECURITY="tls"
-
-if [[ -z "$REMOTE_HOST" || -z "$REMOTE_PORT" ]]; then
-    echo -e "${RED}错误: 远端配置解析异常。${PLAIN}"
-    exit 1
-fi
-
-echo -e "${GREEN}API 同步成功: ${REMOTE_WSHOST}:${REMOTE_PORT} [${REMOTE_SECURITY}]${PLAIN}"
-
-# ============================================================
-# 2. 交互式配置 (ARGO 适配)
-# ============================================================
-echo -e "----------------------------------------------------"
-echo -e "${SKYBLUE}步骤 1/2: 配置中转参数${PLAIN}"
-
-# 2.1 鉴权 KEY
-while true; do
-    read -p "请输入 ICMP9 授权 KEY (UUID): " REMOTE_UUID
-    if [[ -n "$REMOTE_UUID" ]]; then break; fi
-    echo -e "${RED}不能为空${PLAIN}"
-done
-
-# 2.2 本地监听端口
-echo -e ""
-echo -e "${YELLOW}说明: 这是 Xray 在 VPS 内部监听的端口，Argo 隧道应转发到此端口。${PLAIN}"
-read -p "请输入 VPS 本地监听端口 (默认 10086): " LOCAL_PORT
-LOCAL_PORT=${LOCAL_PORT:-10086}
-
-# 2.3 链路信息配置 (用于生成链接)
-echo -e "----------------------------------------------------"
-echo -e "${SKYBLUE}步骤 2/2: 配置 V2RayN 链接信息 (配合 Argo 隧道)${PLAIN}"
-
-# 优选 IP / 域名
-echo -e ""
-echo -e "${YELLOW}1. 优选 IP 或 访问域名${PLAIN}"
-echo -e "   (填入您在 V2RayN [地址/Address] 栏想显示的内容，如: www.visa.com 或 cf-ip.xyz)"
-read -p "   请输入: " PUBLIC_ADDR
-# 默认回退到自动获取 IP
-[[ -z "$PUBLIC_ADDR" ]] && PUBLIC_ADDR=$(curl -s4 http://ip.sb)
-
-# 公网端口
-echo -e ""
-echo -e "${YELLOW}2. 公网访问端口${PLAIN}"
-echo -e "   (填入您在 V2RayN [端口/Port] 栏想显示的内容，Argo 通常为 443, 80, 2053 等)"
-read -p "   请输入 (默认 443): " PUBLIC_PORT
-PUBLIC_PORT=${PUBLIC_PORT:-443}
-
-# Argo 域名
-echo -e ""
-echo -e "${YELLOW}3. Argo 隧道域名${PLAIN}"
-echo -e "   (这是您在 Cloudflare Tunnel 绑定的域名，将用于 TLS SNI 和 WS Host)"
-echo -e "   (例如: tunnel.mysite.com)"
-while true; do
-    read -p "   请输入: " ARGO_DOMAIN
-    if [[ -n "$ARGO_DOMAIN" ]]; then break; fi
-    echo -e "${RED}域名不能为空，否则 VLESS 无法连接${PLAIN}"
-done
-
-# 生成本地 UUID
-LOCAL_UUID=$(/usr/local/bin/xray_core/xray uuid)
-
-# ============================================================
-# 3. 配置文件生成 (核心逻辑)
-# ============================================================
-echo -e "----------------------------------------------------"
-echo -e "${YELLOW}正在拉取节点列表并构建路由规则...${PLAIN}"
-
-# 获取国家列表
-NODES_JSON=$(curl -s "$API_NODES")
-COUNTRY_CODES=$(echo "$NODES_JSON" | jq -r '.countries[]? | .code')
-
-if [[ -z "$COUNTRY_CODES" ]]; then
-    echo -e "${RED}错误: 无法获取节点列表。${PLAIN}"
-    exit 1
-fi
-
-# 备份配置
-cp "$CONFIG_FILE" "$BACKUP_FILE"
-
-# --- 3.1 清理旧配置 ---
-echo -e "${YELLOW}清理旧模块数据...${PLAIN}"
-# 删除所有 tag 以 "icmp9-" 开头的配置
-jq '
-  .inbounds |= map(select(.tag | startswith("icmp9-") | not)) |
-  .outbounds |= map(select(.tag | startswith("icmp9-") | not)) |
-  .routing.rules |= map(select(.outboundTag | startswith("icmp9-") | not))
-' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
-
-
-# --- 3.2 构造 VLESS Inbound (入站) ---
-# 协议: VLESS
-# 传输: WS (路径 /)
-# 解密: none (交给传输层处理，降低 CPU)
-jq --arg port "$LOCAL_PORT" --arg uuid "$LOCAL_UUID" '.inbounds += [{
-  "tag": "icmp9-relay-in",
-  "port": ($port | tonumber),
-  "protocol": "vless",
-  "settings": {
-    "clients": [{"id": $uuid}],
-    "decryption": "none"
-  },
-  "streamSettings": {
-    "network": "ws",
-    "security": "none",
-    "wsSettings": { "path": "/" }
-  }
-}]' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
-
-
-# --- 3.3 批量构造 Outbounds 和 Rules ---
-TEMP_OUTS="/tmp/icmp9_outs.json"
-TEMP_RULES="/tmp/icmp9_rules.json"
-echo "[]" > "$TEMP_OUTS"
-echo "[]" > "$TEMP_RULES"
-
-# 循环处理每个国家节点
-for code in $COUNTRY_CODES; do
-    # Outbound: VMess + WS + TLS
-    # 注意: 这是 VPS -> ICMP9 的连接，必须加密
-    jq --arg code "$code" \
-       --arg host "$REMOTE_HOST" \
-       --arg port "$REMOTE_PORT" \
-       --arg uuid "$REMOTE_UUID" \
-       --arg wshost "$REMOTE_WSHOST" \
-       --arg security "$REMOTE_SECURITY" \
-       '. + [{
-          "tag": ("icmp9-out-" + $code),
-          "protocol": "vmess",
-          "settings": {
-            "vnext": [{
-              "address": $host,
-              "port": ($port | tonumber),
-              "users": [{"id": $uuid, "security": "auto"}]
-            }]
-          },
-          "streamSettings": {
-            "network": "ws",
-            "security": $security,
-            "tlsSettings": (if $security == "tls" then {"serverName": $wshost} else null end),
-            "wsSettings": {
-              "path": ("/" + $code),
-              "headers": {"Host": $wshost}
-            }
-          }
-       }]' "$TEMP_OUTS" > "${TEMP_OUTS}.tmp" && mv "${TEMP_OUTS}.tmp" "$TEMP_OUTS"
-
-    # Routing Rule: 路径分流
-    # 匹配 VLESS 入站路径 /relay/hk -> 转发到 icmp9-out-hk
-    jq --arg code "$code" \
-       '. + [{
-          "type": "field",
-          "inboundTag": ["icmp9-relay-in"],
-          "outboundTag": ("icmp9-out-" + $code),
-          "path": [("/relay/" + $code)]
-       }]' "$TEMP_RULES" > "${TEMP_RULES}.tmp" && mv "${TEMP_RULES}.tmp" "$TEMP_RULES"
-done
-
-# --- 3.4 注入配置 ---
-# 注入 Outbounds
-jq --slurpfile new_outs "$TEMP_OUTS" '.outbounds += $new_outs[0]' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
-
-# 注入 Rules (添加到数组头部，确保优先级)
-jq --slurpfile new_rules "$TEMP_RULES" '.routing.rules = ($new_rules[0] + .routing.rules)' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
-
-rm -f "$TEMP_OUTS" "$TEMP_RULES" "${CONFIG_FILE}.tmp"
-
-# ============================================================
-# 4. 服务重启与结果输出
-# ============================================================
-echo -e "${YELLOW}重启 Xray 服务以应用更改...${PLAIN}"
-systemctl restart xray
-sleep 2
-
-if systemctl is-active --quiet xray; then
-    echo -e "${GREEN}>>> 部署成功！VLESS 中转服务已就绪。${PLAIN}"
-    echo -e ""
+get_user_input() {
     echo -e "----------------------------------------------------"
-    echo -e " [本地配置信息] (用于 Cloudflare Tunnel)"
-    echo -e " 协议: http (或 ws)"
-    echo -e " 地址: localhost:${LOCAL_PORT}"
-    echo -e "----------------------------------------------------"
-    echo -e " [V2RayN 订阅/节点信息] (已生成完整链接)"
-    echo -e " 优选地址: ${SKYBLUE}${PUBLIC_ADDR}:${PUBLIC_PORT}${PLAIN}"
-    echo -e " 伪装域名: ${SKYBLUE}${ARGO_DOMAIN}${PLAIN}"
-    echo -e " 协议类型: ${GREEN}VLESS + WS + TLS${PLAIN}"
-    echo -e ""
+    echo -e "${SKYBLUE}配置 ICMP9 中转参数${PLAIN}"
+    
+    while true; do
+        read -p "请输入 ICMP9 授权 KEY (UUID): " REMOTE_UUID
+        if [[ -n "$REMOTE_UUID" ]]; then break; fi
+    done
 
-    # 生成 V2RayN 链接
-    echo "$NODES_JSON" | jq -c '.countries[]?' | while read -r item; do
-        CODE=$(echo "$item" | jq -r '.code')
-        NAME=$(echo "$item" | jq -r '.name')
-        EMOJI=$(echo "$item" | jq -r '.emoji')
+    read -p "请输入 VPS 内部监听端口 (默认 10086): " LOCAL_PORT
+    LOCAL_PORT=${LOCAL_PORT:-10086}
+
+    echo -e "\n${SKYBLUE}配置 Argo 隧道信息 (用于生成链接)${PLAIN}"
+    read -p "请输入 Argo 隧道域名 (如 tunnel.abc.com): " ARGO_DOMAIN
+    
+    # 智能默认值：如果用户不填显示地址，默认用 Argo 域名
+    read -p "客户端显示地址 (优选IP/域名, 默认同上): " SHOW_ADDR
+    SHOW_ADDR=${SHOW_ADDR:-$ARGO_DOMAIN}
+    
+    LOCAL_UUID=$(/usr/local/bin/xray_core/xray uuid)
+}
+
+# ============================================================
+# 3. 核心配置注入
+# ============================================================
+inject_config() {
+    echo -e "${YELLOW}正在获取远端配置与节点列表...${PLAIN}"
+    
+    # 获取节点列表
+    NODES_JSON=$(curl -s "$API_NODES")
+    COUNTRY_CODES=$(echo "$NODES_JSON" | jq -r '.countries[]? | .code')
+    
+    if [[ -z "$COUNTRY_CODES" ]]; then
+        echo -e "${RED}错误: 无法获取节点列表，请检查网络或 KEY。${PLAIN}"
+        exit 1
+    fi
+
+    # 获取连接元数据
+    RAW_CFG=$(curl -s "$API_CONFIG")
+    R_HOST=$(echo "$RAW_CFG" | grep "^host|" | cut -d'|' -f2 | tr -d '\r\n')
+    R_PORT=$(echo "$RAW_CFG" | grep "^port|" | cut -d'|' -f2 | tr -d '\r\n')
+    R_WSHOST=$(echo "$RAW_CFG" | grep "^wshost|" | cut -d'|' -f2 | tr -d '\r\n')
+    R_TLS="none"; [[ $(echo "$RAW_CFG" | grep "^tls|" | cut -d'|' -f2) == "1" ]] && R_TLS="tls"
+
+    # 备份
+    cp "$CONFIG_FILE" "$BACKUP_FILE"
+
+    # --- A. 清理旧数据 ---
+    jq '
+      .inbounds |= map(select(.tag | startswith("icmp9-") | not)) |
+      .outbounds |= map(select(.tag | startswith("icmp9-") | not)) |
+      .routing.rules |= map(select(.outboundTag | startswith("icmp9-") | not))
+    ' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+
+    # --- B. 注入 DNS (双重保险) ---
+    # 如果是 IPv6-Only 环境，强制 Xray 内部使用 IPv6 DNS 策略
+    if [[ "$IS_IPV6_ONLY" == "true" ]]; then
+        echo -e "${YELLOW}>>> 为 Xray 注入 IPv6 优先 DNS 策略...${PLAIN}"
+        jq '.dns = {
+            "servers": [
+                "2001:4860:4860::8888",
+                "2606:4700:4700::1111",
+                "localhost"
+            ],
+            "queryStrategy": "UseIPv6"
+        }' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+    fi
+
+    # --- C. 注入 VLESS Inbound ---
+    # decryption="none" 是给 256MB 小鸡的性能优化关键
+    jq --arg port "$LOCAL_PORT" --arg uuid "$LOCAL_UUID" '.inbounds += [{
+      "tag": "icmp9-vless-in",
+      "port": ($port | tonumber),
+      "protocol": "vless",
+      "settings": { "clients": [{"id": $uuid}], "decryption": "none" },
+      "streamSettings": { "network": "ws", "wsSettings": { "path": "/" } }
+    }]' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+
+    # --- D. 批量注入 Outbounds & Rules ---
+    echo -e "${YELLOW}正在生成路由规则...${PLAIN}"
+    
+    # 预创建临时文件以提高 jq 写入效率
+    echo "[]" > /tmp/icmp9_outs.json
+    echo "[]" > /tmp/icmp9_rules.json
+
+    for code in $COUNTRY_CODES; do
+        # Outbound: VMess + WS + TLS
+        jq --arg tag "icmp9-out-$code" --arg host "$R_HOST" --arg port "$R_PORT" \
+           --arg uuid "$REMOTE_UUID" --arg wshost "$R_WSHOST" --arg tls "$R_TLS" --arg path "/$code" \
+           '. + [{
+              "tag": $tag, "protocol": "vmess",
+              "settings": { "vnext": [{"address": $host, "port": ($port | tonumber), "users": [{"id": $uuid}]}] },
+              "streamSettings": { "network": "ws", "security": $tls, 
+                "tlsSettings": (if $tls == "tls" then {"serverName": $wshost} else null end),
+                "wsSettings": { "path": $path, "headers": {"Host": $wshost} } }
+           }]' /tmp/icmp9_outs.json > /tmp/icmp9_outs.json.tmp && mv /tmp/icmp9_outs.json.tmp /tmp/icmp9_outs.json
+
+        # Rule: 路径分流
+        jq --arg tag "icmp9-out-$code" --arg path "/relay/$code" \
+           '. + [{ "type": "field", "inboundTag": ["icmp9-vless-in"], "outboundTag": $tag, "path": [$path] }]' \
+           /tmp/icmp9_rules.json > /tmp/icmp9_rules.json.tmp && mv /tmp/icmp9_rules.json.tmp /tmp/icmp9_rules.json
+    done
+
+    # 合并 JSON
+    jq --slurpfile new_outs /tmp/icmp9_outs.json '.outbounds += $new_outs[0]' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+    jq --slurpfile new_rules /tmp/icmp9_rules.json '.routing.rules = ($new_rules[0] + .routing.rules)' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+    
+    rm -f /tmp/icmp9_outs.json /tmp/icmp9_rules.json
+}
+
+# ============================================================
+# 4. 重启与链接输出
+# ============================================================
+finish_setup() {
+    echo -e "${YELLOW}重启 Xray 服务...${PLAIN}"
+    systemctl restart xray
+    sleep 2
+
+    if ! systemctl is-active --quiet xray; then
+        echo -e "${RED}错误: Xray 启动失败，正在回滚配置...${PLAIN}"
+        cp "$BACKUP_FILE" "$CONFIG_FILE"
+        systemctl restart xray
+        exit 1
+    fi
+
+    echo -e "\n${GREEN}>>> 部署成功！以下是您的 VLESS 中转链接:${PLAIN}"
+    echo -e "${GRAY}(已适配 Cloudflare Tunnel, 请确保 Argo 指向本地端口: $LOCAL_PORT)${PLAIN}\n"
+    
+    echo "$NODES_JSON" | jq -c '.countries[]?' | while read -r node; do
+        CODE=$(echo "$node" | jq -r '.code')
+        NAME=$(echo "$node" | jq -r '.name')
+        EMOJI=$(echo "$node" | jq -r '.emoji')
         
-        # 别名
-        PS_NAME="${EMOJI} ${NAME} [中转]"
-        
-        # 路径: 这里的路径对应 Routing Rule 的匹配规则
-        PATH_VAL="/relay/${CODE}"
-        
-        # VLESS URL 格式:
-        # vless://uuid@host:port?encryption=none&security=tls&sni=sni_domain&type=ws&host=ws_host&path=ws_path#Name
-        
-        # 构造 URL 参数
-        LINK="vless://${LOCAL_UUID}@${PUBLIC_ADDR}:${PUBLIC_PORT}?encryption=none&security=tls&sni=${ARGO_DOMAIN}&type=ws&host=${ARGO_DOMAIN}&path=${PATH_VAL}#${PS_NAME}"
-        
-        # URL 编码处理 (简单的处理空格)
+        # 标准 VLESS 链接生成
+        LINK="vless://${LOCAL_UUID}@${SHOW_ADDR}:443?encryption=none&security=tls&sni=${ARGO_DOMAIN}&type=ws&host=${ARGO_DOMAIN}&path=/relay/${CODE}#${EMOJI}${NAME}_中转"
+        # 简单处理空格
         LINK=${LINK// /%20}
         
-        echo -e "${PLAIN}${LINK}${PLAIN}"
+        echo -e "${SKYBLUE}${LINK}${PLAIN}"
     done
-    
-    echo -e ""
-    echo -e "${SKYBLUE}提示: 请复制以上以 vless:// 开头的链接到 V2RayN。${PLAIN}"
-    echo -e "${SKYBLUE}注意: 请确保您的 Cloudflare Tunnel 已正确配置，将流量转发到 localhost:${LOCAL_PORT}。${PLAIN}"
-else
-    echo -e "${RED}错误: Xray 重启失败！正在回滚配置...${PLAIN}"
-    cp "$BACKUP_FILE" "$CONFIG_FILE"
-    systemctl restart xray
-    echo -e "${RED}回滚完成。请检查 config.json 格式或端口冲突。${PLAIN}"
-fi
+}
+
+# 执行流程
+check_env_and_dns
+get_user_input
+inject_config
+finish_setup
