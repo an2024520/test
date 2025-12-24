@@ -1,10 +1,9 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box Native WARP 管理模块 (v2.8 Final-Audit)
-#  - 基底: 基于用户提供的“老版”脚本 (v2.4 Auto-Complete)
-#  - 审计: 确认 Endpoints/Peers 字段符合 1.10+ 规范 (address/port)
-#  - 修复: 路由规则应用前强制清理旧 WARP 规则 (防止堆叠)
+#  Sing-box Native WARP 管理模块 (v3.0 Final-Fix)
+#  - 修复: 路由链条断裂问题 (Outbound -> Detour -> Endpoint)
+#  - 适配: Sing-box v1.10+ & IPv6-Only 环境
 # ============================================================
 
 RED='\033[0;31m'
@@ -44,20 +43,44 @@ ensure_python() {
     fi
 }
 
+# --- 新增: 环境检测与 Endpoint 适配 ---
+check_env() {
+    echo -e "${YELLOW}正在检测网络环境以适配 Endpoint...${PLAIN}"
+    
+    # 默认使用官方通用域名
+    FINAL_ENDPOINT_ADDR="engage.cloudflareclient.com"
+    FINAL_ENDPOINT_PORT=2408
+
+    # 严格检测 IPv4
+    local ipv4_check=$(curl -4 -s -m 5 http://ip.sb 2>/dev/null)
+    
+    if [[ "$ipv4_check" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo -e "${GREEN}>>> 检测到有效 IPv4 环境。${PLAIN}"
+    else
+        # IPv6-Only: 切换为官方 IPv6 Anycast IP
+        FINAL_ENDPOINT_ADDR="2606:4700:d0::a29f:c001"
+        FINAL_ENDPOINT_PORT=2408
+        echo -e "${SKYBLUE}>>> 检测到 IPv6-Only 环境。${PLAIN}"
+        echo -e "${SKYBLUE}>>> 切换为 IPv6 专用 Endpoint: ${FINAL_ENDPOINT_ADDR}${PLAIN}"
+    fi
+    
+    export FINAL_ENDPOINT_ADDR
+    export FINAL_ENDPOINT_PORT
+}
+
 restart_sb() {
-    # [原版保留] 预修复日志权限
     mkdir -p /var/log/sing-box/ && chmod 777 /var/log/sing-box/ >/dev/null 2>&1
     
     echo -e "${YELLOW}重启 Sing-box 服务...${PLAIN}"
     if command -v sing-box &> /dev/null; then
-        # [原版保留] 增加配置校验与回滚机制，非常稳健
         if ! sing-box check -c "$CONFIG_FILE" > /dev/null 2>&1; then
              echo -e "${RED}配置语法校验失败！具体错误如下：${PLAIN}"
              sing-box check -c "$CONFIG_FILE"
+             # 简单的回滚保护
              if [[ -f "${CONFIG_FILE}.bak" ]]; then
-                 echo -e "${YELLOW}正在尝试回滚到备份配置...${PLAIN}"
+                 echo -e "${YELLOW}尝试回滚到备份...${PLAIN}"
                  cp "${CONFIG_FILE}.bak" "$CONFIG_FILE"
-                 restart_sb
+                 systemctl restart sing-box
              fi
              return
         fi
@@ -108,7 +131,6 @@ EOF
 write_warp_config() {
     local priv="$1" pub="$2" v4="$3" v6="$4" res="$5"
     
-    # [原版保留] 强制补全掩码
     [[ ! "$v4" =~ "/" && -n "$v4" && "$v4" != "null" ]] && v4="${v4}/32"
     [[ ! "$v6" =~ "/" && -n "$v6" && "$v6" != "null" ]] && v6="${v6}/128"
     
@@ -116,23 +138,28 @@ write_warp_config() {
     [[ -n "$v4" && "$v4" != "null" ]] && addr_json=$(echo "$addr_json" | jq --arg ip "$v4" '. + [$ip]')
     [[ -n "$v6" && "$v6" != "null" ]] && addr_json=$(echo "$addr_json" | jq --arg ip "$v6" '. + [$ip]')
     
-    # [审计确认] 此处结构正确！符合 Sing-box 1.10+ 规范
-    # address/port 代替了 server/server_port
-    local warp_json=$(jq -n \
+    # 1. 执行环境检测
+    check_env
+
+    # 2. 生成底层 Endpoint (Tag: warp-endpoint)
+    # 负责实际连接，不直接参与路由
+    local endpoint_json=$(jq -n \
         --arg priv "$priv" \
         --arg pub "$pub" \
         --argjson addr "$addr_json" \
         --argjson res "$res" \
+        --arg ep_addr "$FINAL_ENDPOINT_ADDR" \
+        --argjson ep_port "$FINAL_ENDPOINT_PORT" \
         '{ 
             "type": "wireguard", 
-            "tag": "WARP", 
+            "tag": "warp-endpoint", 
+            "system": false,
             "address": $addr, 
             "private_key": $priv,
-            "system": false,
             "peers": [
                 { 
-                    "address": "2606:4700:d0::a29f:c001", 
-                    "port": 2408, 
+                    "address": $ep_addr, 
+                    "port": $ep_port, 
                     "public_key": $pub, 
                     "reserved": $res,
                     "allowed_ips": ["0.0.0.0/0", "::/0"]
@@ -140,27 +167,38 @@ write_warp_config() {
             ] 
         }')
 
-    if [[ $? -ne 0 || -z "$warp_json" ]]; then echo -e "${RED}JSON 生成失败。${PLAIN}"; return; fi
+    # 3. 生成上层 Outbound (Tag: WARP)
+    # 负责承接路由规则，并 Detour 到 warp-endpoint
+    local outbound_json=$(jq -n '{ 
+        "type": "direct", 
+        "tag": "WARP", 
+        "detour": "warp-endpoint" 
+    }')
 
-    echo -e "${YELLOW}正在验证并写入配置...${PLAIN}"
+    if [[ $? -ne 0 || -z "$endpoint_json" ]]; then echo -e "${RED}JSON 生成失败。${PLAIN}"; return; fi
+
+    echo -e "${YELLOW}正在架构迁移 (Migration to Endpoints + Detour)...${PLAIN}"
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
     local TMP_CONF=$(mktemp)
     
-    # 确保 Direct 存在
-    jq 'if .outbounds == null then .outbounds = [] else . end | 
-        if (.outbounds | map(select(.tag == "direct")) | length) == 0 then 
-           .outbounds += [{"type":"direct","tag":"direct"}] 
-        else . end' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
-
-    # 写入 Endpoint (清理旧的 WARP)
+    # 初始化数组
     jq 'if .endpoints == null then .endpoints = [] else . end' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
-    jq 'del(.outbounds[] | select(.tag == "WARP" or .tag == "warp" or .tag == "warp-out"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
-    jq 'del(.endpoints[] | select(.tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
-    jq --argjson new "$warp_json" '.endpoints += [$new]' "$CONFIG_FILE" > "$TMP_CONF"
+    jq 'if .outbounds == null then .outbounds = [] else . end' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
+
+    # 清理所有旧数据 (防止冲突)
+    # 删除 tag 为 WARP 的旧 Outbound，删除 tag 为 warp-endpoint 的旧 Endpoint
+    jq 'del(.outbounds[] | select(.tag == "WARP" or .tag == "warp" or .tag == "warp-out" or .type == "wireguard"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
+    jq 'del(.endpoints[] | select(.tag == "warp-endpoint" or .tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
+
+    # 注入新配置
+    # A. 注入 Endpoint
+    jq --argjson new "$endpoint_json" '.endpoints += [$new]' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
+    # B. 注入 Outbound
+    jq --argjson new "$outbound_json" '.outbounds += [$new]' "$CONFIG_FILE" > "$TMP_CONF"
     
     if [[ $? -eq 0 && -s "$TMP_CONF" ]]; then
         mv "$TMP_CONF" "$CONFIG_FILE"
-        echo -e "${GREEN}WARP Endpoint 配置完成 (IPv6 Optimized)。${PLAIN}"
+        echo -e "${GREEN}WARP 配置已升级至 Sing-box v1.10+ 架构。${PLAIN}"
         restart_sb
     else
         echo -e "${RED}写入失败，已保留原配置。${PLAIN}"
@@ -246,12 +284,14 @@ manual_warp() {
 }
 
 # ==========================================
-# 3. 路由与模式函数 (应用修正)
+# 3. 路由与模式函数 (检查逻辑修复)
 # ==========================================
 
 ensure_warp_exists() {
-    if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then return 0; fi
-    echo -e "${RED}错误：未检测到 WARP 节点配置！${PLAIN}"
+    # 检查是否存在桥接 Outbound
+    if jq -e '.outbounds[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then return 0; fi
+    
+    echo -e "${RED}错误：未检测到 WARP 配置 (Endpoints 模式)！${PLAIN}"
     if [[ -f "$CRED_FILE" ]]; then
         echo -e "检测到历史凭证备份，是否自动恢复？[y/n]"
         read -p "选择: " recover
@@ -269,10 +309,10 @@ apply_routing_rule() {
     echo -e "${YELLOW}正在应用路由规则...${PLAIN}"
     local TMP_CONF=$(mktemp)
     
-    # [关键修复] 先删除所有指向 WARP 的旧规则，防止规则堆叠冲突！
+    # 清理旧的 WARP 规则
     jq 'del(.route.rules[] | select(.outbound == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     
-    # 再添加新规则到最前 (High Priority)
+    # 插入新规则
     jq --argjson r "$rule_json" '.route.rules = [$r] + .route.rules' "$CONFIG_FILE" > "$TMP_CONF"
     if [[ $? -eq 0 && -s "$TMP_CONF" ]]; then
         mv "$TMP_CONF" "$CONFIG_FILE"
@@ -290,17 +330,11 @@ mode_stream() {
 
 mode_global() {
     ensure_warp_exists || return
-
     echo -e "${YELLOW}>>> 警告: 全局模式将改变路由默认出口 (Final) <<<${PLAIN}"
-    echo -e " 这将对接管所有当前及【未来添加】的节点流量。"
-    echo -e " -----------------------------------------------"
     echo -e " a. 仅 IPv4  b. 仅 IPv6  c. 双栈全局 (默认)"
     read -p "选择: " sub
     
-    # 防环回
     local anti_loop_rule=$(jq -n '{ "domain": ["engage.cloudflareclient.com", "cloudflare.com"], "outbound": "direct" }')
-    # 注意：anti_loop 也是一条规则，这里调用 apply 会清空 WARP 规则，所以顺序很重要
-    # 但 anti_loop 走 direct，apply_routing_rule 只清空 outbound==WARP，所以不会被误删
     apply_routing_rule "$anti_loop_rule"
 
     local rule=""
@@ -335,15 +369,19 @@ uninstall_warp() {
     echo -e "${YELLOW}正在卸载 WARP...${PLAIN}"
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak_uninstall"
     local TMP_CONF=$(mktemp)
-    jq 'del(.endpoints[] | select(.tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
+    
+    # 清理 WARP 相关的 Outbounds, Endpoints, Rules
+    jq 'del(.outbounds[] | select(.tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
+    jq 'del(.endpoints[] | select(.tag == "warp-endpoint"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq 'del(.route.rules[] | select(.outbound == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq 'del(.route.rules[] | select(.domain[]? == "engage.cloudflareclient.com"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
+    
     echo -e "${GREEN}卸载完成。${PLAIN}"
     restart_sb
 }
 
 # ==========================================
-# 4. 菜单主界面
+# 4. 菜单与自动化
 # ==========================================
 
 show_menu() {
@@ -351,66 +389,48 @@ show_menu() {
     while true; do
         clear
         local status_text="${RED}未配置${PLAIN}"
-        if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then 
-            status_text="${GREEN}已配置 (Endpoint)${PLAIN}"
+        if jq -e '.outbounds[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then 
+            status_text="${GREEN}已配置 (v1.10+ Endpoint Mode)${PLAIN}"
         fi
         
-        echo -e "================ Native WARP 配置向导 (Sing-box) ================"
+        echo -e "================ Native WARP 配置向导 (Sing-box v1.10+) ================"
         echo -e " 配置文件: ${SKYBLUE}$CONFIG_FILE${PLAIN}"
         echo -e " 凭证状态: [$status_text]"
         echo -e "----------------------------------------------------"
-        echo -e " 1. 注册/配置 WARP 凭证 ${YELLOW}(卸载后需先点此恢复)${PLAIN}"
+        echo -e " 1. 注册/配置 WARP 凭证"
         echo -e " 2. 查看当前凭证信息"
         echo -e "----------------------------------------------------"
-        echo -e " 3. ${SKYBLUE}模式一：智能流媒体分流 (推荐)${PLAIN}"
-        echo -e " 4. ${SKYBLUE}模式二：全局接管 (所有节点+未来节点)${PLAIN}"
-        echo -e " 5. ${SKYBLUE}模式三：指定节点接管 (多节点共存)${PLAIN}"
+        echo -e " 3. ${SKYBLUE}模式一：智能流媒体分流${PLAIN}"
+        echo -e " 4. ${SKYBLUE}模式二：全局接管${PLAIN}"
+        echo -e " 5. ${SKYBLUE}模式三：指定节点接管 (推荐)${PLAIN}"
         echo -e "----------------------------------------------------"
-        echo -e " 7. ${RED}禁用/卸载 Native WARP (恢复直连)${PLAIN}"
+        echo -e " 7. ${RED}禁用/卸载 Native WARP${PLAIN}"
         echo -e " 0. 返回上级菜单"
         echo -e "===================================================="
         read -p "请输入选项: " choice
         case "$choice" in
-            1)
-                echo -e "  1. 自动注册 (需 Python)"; echo -e "  2. 手动录入 (Base64/CSV)"
-                read -p "  请选择: " reg_type
-                if [[ "$reg_type" == "1" ]]; then register_warp; else manual_warp; fi; read -p "按回车继续..." ;;
-            2) cat "$CRED_FILE" 2>/dev/null; read -p "按回车继续..." ;;
-            3) mode_stream; read -p "按回车继续..." ;;
-            4) mode_global; read -p "按回车继续..." ;;
-            5) mode_specific_node; read -p "按回车继续..." ;;
-            7) uninstall_warp; read -p "按回车继续..." ;;
+            1) echo -e "  1. 自动注册; 2. 手动录入"; read -p "选: " t; if [[ "$t" == "1" ]]; then register_warp; else manual_warp; fi; read -p "继续..." ;;
+            2) cat "$CRED_FILE" 2>/dev/null; read -p "继续..." ;;
+            3) mode_stream; read -p "继续..." ;;
+            4) mode_global; read -p "继续..." ;;
+            5) mode_specific_node; read -p "继续..." ;;
+            7) uninstall_warp; read -p "继续..." ;;
             0) exit 0 ;;
-            *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
+            *) echo -e "无效"; sleep 1 ;;
         esac
     done
 }
 
-# ==========================================
-# 5. 自动化入口 (Auto Main)
-# ==========================================
-
 auto_main() {
-    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署流程...${PLAIN}"
+    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署...${PLAIN}"
     check_dependencies
-    
-    # --- 1. 凭证处理 (三要素检测) ---
     if [[ -n "$WARP_PRIV_KEY" ]] && [[ -n "$WARP_IPV6" ]]; then
-        echo -e "${YELLOW}[自动模式] 检测到外部三要素凭证，正在应用...${PLAIN}"
-        local priv="$WARP_PRIV_KEY"
-        local pub="bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
-        local v4="172.16.0.2/32"
-        local v6="$WARP_IPV6"
-        local res="${WARP_RESERVED:-[0,0,0]}"
-        
-        save_credentials "$priv" "$pub" "$v4" "$v6" "$res"
-        write_warp_config "$priv" "$pub" "$v4" "$v6" "$res"
+        save_credentials "$WARP_PRIV_KEY" "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=" "172.16.0.2/32" "$WARP_IPV6" "${WARP_RESERVED:-[0,0,0]}"
+        write_warp_config "$WARP_PRIV_KEY" "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=" "172.16.0.2/32" "$WARP_IPV6" "${WARP_RESERVED:-[0,0,0]}"
     else
-        echo -e "${YELLOW}[自动模式] 无完整凭证，执行自动注册...${PLAIN}"
         register_warp
     fi
 
-    # --- 2. 路由模式应用 ---
     local anti_loop_rule=$(jq -n '{ "domain": ["engage.cloudflareclient.com", "cloudflare.com"], "outbound": "direct" }')
     apply_routing_rule "$anti_loop_rule"
     
@@ -421,24 +441,14 @@ auto_main() {
         3)
             if [[ -n "$WARP_INBOUND_TAGS" ]]; then
                 local tags_json=$(echo "$WARP_INBOUND_TAGS" | jq -R 'split(",")')
-                echo -e "   > 目标节点: $WARP_INBOUND_TAGS"
                 rule=$(jq -n --argjson ib "$tags_json" '{ "inbound": $ib, "outbound": "WARP" }')
             fi
             ;;
-        4)
-            echo -e "${SKYBLUE}[自动模式] 策略: 双栈全局接管${PLAIN}"
-            rule=$(jq -n '{ "outbound": "WARP" }')
-            ;;
-        5)
-            echo -e "${SKYBLUE}[自动模式] 策略: 仅流媒体分流${PLAIN}"
-            rule=$(jq -n '{ "domain_suffix": ["netflix.com","nflxvideo.net","openai.com","ai.com","disney.com","disneyplus.com","google.com","youtube.com"], "outbound": "WARP" }')
-            ;;
-        *) 
-            rule=$(jq -n '{ "domain_suffix": ["netflix.com","nflxvideo.net","openai.com","ai.com","disney.com","disneyplus.com","google.com","youtube.com"], "outbound": "WARP" }');;
+        4) rule=$(jq -n '{ "outbound": "WARP" }') ;;
+        *) rule=$(jq -n '{ "domain_suffix": ["netflix.com","nflxvideo.net","google.com","youtube.com"], "outbound": "WARP" }');;
     esac
-    
     [[ -n "$rule" ]] && apply_routing_rule "$rule"
-    echo -e "${GREEN}>>> [WARP-SB] 自动化配置完成。${PLAIN}"
+    echo -e "${GREEN}>>> [WARP-SB] 配置完成。${PLAIN}"
 }
 
 if [[ "$AUTO_SETUP" == "true" ]]; then auto_main; else show_menu; fi
