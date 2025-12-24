@@ -155,7 +155,7 @@ NODE_JSON=$(jq -n \
     --arg sid "$SHORT_ID" \
     '{
       tag: $tag,
-      listen: "0.0.0.0",
+      listen: "::",
       port: ($port | tonumber),
       protocol: "vless",
       settings: {
