@@ -71,7 +71,7 @@ echo -e "${GREEN}即将安装版本: ${LATEST_VERSION}${PLAIN}"
 DOWNLOAD_URL="https://github.com/XTLS/Xray-core/releases/download/${LATEST_VERSION}/Xray-linux-${XRAY_ARCH}.zip"
 
 # [修正 2] 加入 --no-check-certificate 解决 Worker 证书信任问题
-wget --no-check-certificate -O /tmp/xray.zip "$DOWNLOAD_URL"
+curl -L -k -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" -o /tmp/xray.zip "$DOWNLOAD_URL"
 if [ $? -ne 0 ]; then
     echo -e "${RED}下载失败！${PLAIN}"
     exit 1
