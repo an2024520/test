@@ -1,7 +1,8 @@
 #!/bin/bash
 # ============================================================
-#  Commander Auto-Deploy (v7.2 Strict Pure)
+#  Commander Auto-Deploy (v7.2 Strict Pure - Fix Tag Sync)
 #  - 特性: 严格 IP 检测 | 纯净 URL (适配 Worker)
+#  - 修复: 修正 Xray Vision 标签不一致导致 WARP 接管失效的问题
 # ============================================================
 
 # --- 基础定义 ---
@@ -95,7 +96,9 @@ run() {
     ./"$script"
 }
 
-# ... [保留原有的 deploy_logic 及后续逻辑] ...
+# ============================================================
+#  [核心逻辑] 部署与 Tag 累加 (Fix applied here)
+# ============================================================
 deploy_logic() {
     clear
     echo -e "${GREEN}>>> 正在处理您的订单 (开始部署)...${PLAIN}"
@@ -158,13 +161,15 @@ deploy_logic() {
         echo -e "${GREEN}>>> [Xray] 部署核心...${PLAIN}"
         run "xray_core.sh"
         
-        # A. Vision Reality
+        # A. Vision Reality [已修复 Tag 一致性]
         if [[ "$DEPLOY_XRAY_VISION" == "true" ]]; then
             echo -e "${GREEN}>>> [Xray] Vision 节点 (: ${VAR_XRAY_VISION_PORT})...${PLAIN}"
             export PORT="$VAR_XRAY_VISION_PORT"
             run "xray_vless_vision_reality.sh"
             unset PORT
-            XRAY_TAGS_ACC+="Vision-${VAR_XRAY_VISION_PORT},"
+            # [Fix] 这里的 Tag 必须与 xray_vless_vision_reality.sh 内部定义的 NODE_TAG 完全一致
+            # 原脚本定义: NODE_TAG="vless-vision-${PORT}"
+            XRAY_TAGS_ACC+="vless-vision-${VAR_XRAY_VISION_PORT},"
         fi
 
         # B. WS TLS (CDN)
