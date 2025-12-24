@@ -221,6 +221,7 @@ inject_config() {
 # 3. 验证与输出
 # ============================================================
 finish_setup() {
+    ARGO_DOMAIN=$(echo "$ARGO_DOMAIN" | tr -d '\r\n ')
     echo -e "${YELLOW}>>> [重启] 应用配置...${PLAIN}"
     systemctl restart xray
     sleep 2
@@ -254,7 +255,7 @@ finish_setup() {
             LINK="vmess://$(echo -n "$VMESS_JSON" | base64 -w 0)"
         else
             LINK="vless://${UUID}@${ARGO_DOMAIN}:443?encryption=none&security=tls&sni=${ARGO_DOMAIN}&type=ws&host=${ARGO_DOMAIN}&path=${LOCAL_PATH}#${NODE_ALIAS}"
-            LINK=${LINK// /%20}
+          #  LINK=${LINK// /%20}
         fi
         
         echo -e "${SKYBLUE}${LINK}${PLAIN}"
