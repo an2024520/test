@@ -5,6 +5,7 @@
 #  - 架构: Endpoint + Detour (v1.10+ 标准)
 #  - 修复: 修正路由插入顺序导致的“全局模式死循环”BUG
 #  - 增强: 防环回规则增加 IPv6 Endpoint IP 白名单
+#  - 补丁: 修复手动模式下因缺少 config.json 导致无法启动的问题
 # ============================================================
 
 RED='\033[0;31m'
@@ -14,7 +15,7 @@ SKYBLUE='\033[0;36m'
 PLAIN='\033[0m'
 
 # ==========================================
-# 1. 环境初始化
+# 1. 环境初始化 (修复版)
 # ==========================================
 
 CONFIG_FILE=""
@@ -25,10 +26,20 @@ for p in "${PATHS[@]}"; do
     if [[ -f "$p" ]]; then CONFIG_FILE="$p"; break; fi
 done
 
-if [[ -z "$CONFIG_FILE" ]]; then
-    echo -e "${RED}错误: 未检测到 config.json 配置文件！${PLAIN}"
-    exit 1
+# --- [修复逻辑 Start] ---
+# 自动模式下保持严格检查，防止流程错乱；手动模式下允许空配置启动
+if [[ "$AUTO_SETUP" == "true" ]]; then
+    if [[ -z "$CONFIG_FILE" ]]; then
+        echo -e "${RED}错误: [自动模式] 未检测到 config.json 配置文件！流程终止。${PLAIN}"
+        exit 1
+    fi
+else
+    if [[ -z "$CONFIG_FILE" ]]; then
+        CONFIG_FILE="/etc/sing-box/config.json"
+        echo -e "${YELLOW}提示: 未找到现有 config.json，将在操作时尝试创建或写入默认路径。${PLAIN}"
+    fi
 fi
+# --- [修复逻辑 End] ---
 
 mkdir -p "$(dirname "$CRED_FILE")"
 
@@ -124,6 +135,13 @@ EOF
 write_warp_config() {
     local priv="$1" pub="$2" v4="$3" v6="$4" res="$5"
     
+    # [新增] 确保目录和基础文件存在，防止 jq 报错
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        mkdir -p "$(dirname "$CONFIG_FILE")"
+        echo "{}" > "$CONFIG_FILE"
+        echo -e "${YELLOW}已生成空配置文件: $CONFIG_FILE${PLAIN}"
+    fi
+
     [[ ! "$v4" =~ "/" && -n "$v4" && "$v4" != "null" ]] && v4="${v4}/32"
     [[ ! "$v6" =~ "/" && -n "$v6" && "$v6" != "null" ]] && v6="${v6}/128"
     
@@ -348,7 +366,9 @@ show_menu() {
     while true; do
         clear
         local st="${RED}未配置${PLAIN}"
-        jq -e '.outbounds[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1 && st="${GREEN}已配置 (v3.6 Ultimate)${PLAIN}"
+        if [[ -f "$CONFIG_FILE" ]]; then
+            jq -e '.outbounds[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1 && st="${GREEN}已配置 (v3.6 Ultimate)${PLAIN}"
+        fi
         echo -e "================ Native WARP 管理中心 (Sing-box 1.10+) ================"
         echo -e " 当前配置状态: [$st]"
         echo -e "----------------------------------------------------"
