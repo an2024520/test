@@ -1,9 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Xray WARP Native Route 管理面板 (v3.6 Ultimate-BugFix)
-#  - 紧急修复: 修正“指定节点接管”提取到错误 Tag (序号) 的 Bug
-#  - 功能保持: 自动回填凭证 / 强制 IPv4 内网地址 / Sing-box 级体验
+#  Xray WARP Native Route 管理面板 (v3.7 Ultimate-Perfect)
+#  - 核心逻辑: 移植 Sing-box 的正则清洗算法，完美处理 Reserved 格式
+#  - 关键修复: 包含 v3.6 的“指定节点接管”Tag 提取修复
+#  - 体验升级: 自动回填凭证 + IPv4 强制补全 + 智能格式化
 # ============================================================
 
 RED='\033[0;31m'
@@ -54,6 +55,15 @@ check_env() {
     export FINAL_ENDPOINT FINAL_ENDPOINT_IP
 }
 
+# [核心] 移植 Sing-box 的正则清洗逻辑
+clean_reserved_str() {
+    local input="$1"
+    # 仅提取数字，过滤掉 [] , 空格 等所有杂质，并用逗号连接
+    # 结果示例: 123,45,67
+    local nums=$(echo "$input" | grep -oE '[0-9]+' | tr '\n' ',' | sed 's/,$//')
+    echo "$nums"
+}
+
 register_warp() {
     echo -e "${YELLOW}正在连接 Cloudflare API 注册...${PLAIN}"
     if ! command -v wg &> /dev/null; then apt-get install -y wireguard-tools >/dev/null 2>&1; fi
@@ -92,6 +102,7 @@ manual_warp() {
         def_res="$WARP_RESERVED"
     fi
 
+    # 默认值补全
     if [[ -z "$def_v4" ]]; then def_v4="172.16.0.2/32"; fi
     if [[ -z "$def_res" ]]; then def_res="0,0,0"; fi
 
@@ -109,9 +120,12 @@ manual_warp() {
     read -p "IPv6地址 ${GRAY}[默认: $def_v6]${PLAIN}: " v6
     v6=${v6:-$def_v6}
     
+    # 允许用户偷懒输入 [0,0,0]
     read -p "Reserved ${GRAY}[默认: $def_res]${PLAIN}: " r
     r=${r:-$def_res}
-    r=$(echo "$r" | tr -d '[] ')
+    
+    # [核心] 使用正则逻辑清洗
+    r=$(clean_reserved_str "$r")
     
     if [[ -z "$k" || -z "$v6" ]]; then
         echo -e "${RED}错误: 私钥和 IPv6 地址不能为空！${PLAIN}"
@@ -139,7 +153,7 @@ load_credentials() {
         export WG_KEY="$WARP_PRIV_KEY" WG_IPV4="$WARP_IPV4" WG_IPV6="$WARP_IPV6" WG_RESERVED="$WARP_RESERVED"
         return 0
     elif [[ -n "$WARP_PRIV_KEY" ]]; then
-        export WG_KEY="$WARP_PRIV_KEY" WG_IPV4="$WARP_IPV4" WG_IPV6="$WARP_IPV6" WG_RESERVED=$(echo "$WARP_RESERVED" | tr -d '[] ')
+        export WG_KEY="$WARP_PRIV_KEY" WG_IPV4="$WARP_IPV4" WG_IPV6="$WARP_IPV6" WG_RESERVED=$(clean_reserved_str "$WARP_RESERVED")
         return 0
     else
         return 1
@@ -167,6 +181,7 @@ apply_routing_rule() {
 
     jq '.outbounds |= map(select(.tag != "warp-out")) | .routing.rules |= map(select(.outboundTag != "warp-out"))' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
 
+    # [Xray 原生格式] 手动加上 []，要求变量 WG_RESERVED 必须是纯数字逗号分隔
     local res_json="[${WG_RESERVED}]"
     local addr_json="[\"$WG_IPV6\"]"
     if [[ -n "$WG_IPV4" && "$WG_IPV4" != "null" ]]; then
@@ -235,8 +250,7 @@ mode_specific_node() {
     read -p "输入节点序号 (空格分隔): " selection
     local tags_json="[]"
     for num in $selection; do
-        # [修复点] 之前错误提取了 $1 (序号)，现在修正为提取 $2 (Tag)
-        # awk -F'|' 拿到 " 1  tag ", 再 awk 默认分割，1是序号，2是Tag
+        # [v3.6 修复保留] 提取第2列 (Tag) 而非第1列 (序号)
         local tag=$(echo "$node_list" | sed -n "${num}p" | awk -F'|' '{print $1}' | awk '{print $2}')
         [[ -n "$tag" ]] && tags_json=$(echo "$tags_json" | jq --arg t "$tag" '. + [$t]')
     done
@@ -264,7 +278,7 @@ show_menu() {
         local st="${RED}未配置${PLAIN}"
         if [[ -f "$CONFIG_FILE" ]]; then
             if jq -e '.outbounds[]? | select(.tag == "warp-out")' "$CONFIG_FILE" >/dev/null 2>&1; then
-                st="${GREEN}已配置 (v3.6 Ultimate)${PLAIN}"
+                st="${GREEN}已配置 (v3.7 Ultimate)${PLAIN}"
             fi
         fi
 
