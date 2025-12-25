@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # ============================================================
-#  全能协议管理中心 (Commander v4.3 IPv6 Strict)
+#  全能协议管理中心 (Commander v4.5 IPv6 Strict)
 #  - 架构: Xray / Sing-box / Hy2 / Tools 纵向分流
-#  - 升级: 引入严格 IPv4 检测 (ip.sb) + DNS 自动修复
+#  - 升级: Sing-box 模块适配 Hysteria 2 智能部署脚本
 #  - 纯净: 移除内置代理，适配用户自定义 Worker 环境
 # ============================================================
 
@@ -82,7 +82,6 @@ echo ""
 URL_LIST_FILE="https://raw.githubusercontent.com/an2024520/test/refs/heads/main/sh_url.txt"
 LOCAL_LIST_FILE="/tmp/sh_url.txt"
 
-# ... [文件名映射保持不变，省略以节省篇幅，请保留原文件中的定义] ...
 FILE_XRAY_CORE="xray_core.sh"
 FILE_XRAY_UNINSTALL="xray_uninstall_all.sh"
 FILE_ADD_XHTTP="xray_vless_xhttp_reality.sh"
@@ -99,8 +98,10 @@ FILE_SB_ADD_ANYTLS="sb_anytls_reality.sh"
 FILE_SB_ADD_VISION="sb_vless_vision_reality.sh"
 FILE_SB_ADD_WS="sb_vless_ws_tls.sh"
 FILE_SB_ADD_TUNNEL="sb_vless_ws_tunnel.sh"
-FILE_SB_ADD_HY2_SELF="sb_hy2_self.sh"
-FILE_SB_ADD_HY2_ACME="sb_hy2_acme.sh"
+# --- [修改点 Start] ---
+# 将原有的 SELF/ACME 两个脚本变量替换为单一的智能部署脚本变量
+FILE_SB_ADD_HY2="sb_hy2_deploy.sh"
+# --- [修改点 End] ---
 FILE_SB_WARP="sb_module_warp_native_route.sh"
 FILE_SB_INFO="sb_get_node_details.sh"
 FILE_SB_DEL="sb_module_node_del.sh"
@@ -206,9 +207,6 @@ check_run() {
     [[ "$no_pause" != "true" ]] && { echo -e ""; read -p "操作结束，按回车键继续..."; }
 }
 
-# ... [后续所有菜单函数 menu_xray, menu_singbox 等保持原样不变] ...
-# ... [为了节省你的复制时间，此处省略中间的菜单代码，请直接使用你原来的菜单逻辑] ...
-
 menu_xray() {
     while true; do
         clear
@@ -254,13 +252,18 @@ menu_singbox() {
         echo -e " ${GREEN}4.${PLAIN} VLESS-Vision-Reality ${GRAY}[$FILE_SB_ADD_VISION]${PLAIN}"
         echo -e " ${GREEN}5.${PLAIN} VLESS-WS-TLS         ${GRAY}[$FILE_SB_ADD_WS]${PLAIN}"
         echo -e " ${GREEN}6.${PLAIN} VLESS-WS-Tunnel      ${GRAY}[$FILE_SB_ADD_TUNNEL]${PLAIN}"
-        echo -e " ${GREEN}7.${PLAIN} Hysteria2 (自签)     ${GRAY}[$FILE_SB_ADD_HY2_SELF]${PLAIN}"
-        echo -e " ${GREEN}8.${PLAIN} Hysteria2 (ACME)     ${GRAY}[$FILE_SB_ADD_HY2_ACME]${PLAIN}"
+        
+        # --- [修改点 Start] ---
+        # 合并选项 7 & 8 为 "智能部署"，并调用新脚本
+        echo -e " ${GREEN}7.${PLAIN} Hysteria2 (智能部署) ${GRAY}[$FILE_SB_ADD_HY2]${PLAIN}"
         echo -e " ----------------------------------------"
         echo -e " ${GRAY}[路由与维护]${PLAIN}"
-        echo -e " ${SKYBLUE}9.${PLAIN} Native WARP (接管)   ${GRAY}[$FILE_SB_WARP]${PLAIN}"
-        echo -e " ${SKYBLUE}10.${PLAIN} 查看节点链接        ${GRAY}[$FILE_SB_INFO]${PLAIN}"
-        echo -e " ${SKYBLUE}11.${PLAIN} 删除指定节点        ${GRAY}[$FILE_SB_DEL]${PLAIN}"
+        # 后续选项序号前移 (原9-11 -> 现8-10)
+        echo -e " ${SKYBLUE}8.${PLAIN} Native WARP (接管)   ${GRAY}[$FILE_SB_WARP]${PLAIN}"
+        echo -e " ${SKYBLUE}9.${PLAIN} 查看节点链接        ${GRAY}[$FILE_SB_INFO]${PLAIN}"
+        echo -e " ${SKYBLUE}10.${PLAIN} 删除指定节点        ${GRAY}[$FILE_SB_DEL]${PLAIN}"
+        # --- [修改点 End] ---
+        
         echo -e " ----------------------------------------"
         echo -e " ${GRAY}0. 返回主菜单${PLAIN}"
         read -p "请选择: " choice
@@ -268,9 +271,14 @@ menu_singbox() {
             1) check_run "$FILE_SB_CORE" ;; 2) check_run "$FILE_SB_UNINSTALL" ;;
             3) check_run "$FILE_SB_ADD_ANYTLS" ;; 4) check_run "$FILE_SB_ADD_VISION" ;;
             5) check_run "$FILE_SB_ADD_WS" ;; 6) check_run "$FILE_SB_ADD_TUNNEL" ;;
-            7) check_run "$FILE_SB_ADD_HY2_SELF" ;; 8) check_run "$FILE_SB_ADD_HY2_ACME" ;;
-            9) check_run "$FILE_SB_WARP" "true" ;; 
-            10) check_run "$FILE_SB_INFO" ;; 11) check_run "$FILE_SB_DEL" ;;
+            
+            # --- [修改点 Start] ---
+            # 选项 7 调用智能脚本，后续选项逻辑顺延
+            7) check_run "$FILE_SB_ADD_HY2" ;; 
+            8) check_run "$FILE_SB_WARP" "true" ;; 
+            9) check_run "$FILE_SB_INFO" ;; 10) check_run "$FILE_SB_DEL" ;;
+            # --- [修改点 End] ---
+            
             0) return ;; *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
     done
@@ -299,7 +307,7 @@ show_main_menu() {
     while true; do
         clear
         echo -e "${GREEN}============================================${PLAIN}"
-        echo -e "${GREEN}      全能协议管理中心 (Commander v4.3)      ${PLAIN}"
+        echo -e "${GREEN}      全能协议管理中心 (Commander v4.5)      ${PLAIN}"
         echo -e "${GREEN}============================================${PLAIN}"
         
         STATUS_TEXT=""
@@ -310,6 +318,7 @@ show_main_menu() {
         echo -e "--------------------------------------------"
         echo -e " ${SKYBLUE}1.${PLAIN} XRAY 核心系列      ${GRAY}(Xray Core Series)${PLAIN}"
         echo -e " ${SKYBLUE}2.${PLAIN} SINGBOX 核心系列   ${GRAY}(Sing-box Core Series)${PLAIN}"
+        # 保持原样：3号选项继续调用 hy2.sh，因为它是全能面板
         echo -e " ${SKYBLUE}3.${PLAIN} 独立 HY2 协议      ${GRAY}[$FILE_HY2]${PLAIN}"
         echo -e " ${SKYBLUE}4.${PLAIN} 系统优化工具       ${GRAY}(System Tools)${PLAIN}"
         echo -e "--------------------------------------------"
