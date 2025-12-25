@@ -1,11 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Xray WARP Native Route 模块 (v2.6 Ultimate-Fix)
-#  - 架构: Xray WireGuard Outbound
-#  - 修复: 增加独立账号注册能力，解除对 auto_deploy 的强依赖
-#  - 增强: 动态搜索 config.json，防止未安装核心时脚本崩溃
+#  Xray WARP Native Route 模块 (v2.7 Ultimate-Fix)
+#  - 修复: 恢复手动模式下的接管模式选择菜单 (1-4)
 #  - 适配: 自动识别 IPv6-Only 环境并切换 Endpoint
+#  - 独立: 具备账号注册能力，不依赖 auto_deploy 预设
 # ============================================================
 
 RED='\033[0;31m'
@@ -21,264 +20,126 @@ GRAY='\033[0;37m'
 # ============================================================
 # 0. 环境初始化与依赖检查
 # ============================================================
-
-# 动态搜索配置文件
 CONFIG_FILE=""
 PATHS=("/usr/local/etc/xray/config.json" "/etc/xray/config.json" "$HOME/xray/config.json")
-
-for p in "${PATHS[@]}"; do
-    if [[ -f "$p" ]]; then CONFIG_FILE="$p"; break; fi
-done
+for p in "${PATHS[@]}"; do [[ -f "$p" ]] && CONFIG_FILE="$p" && break; done
 
 BACKUP_FILE="${CONFIG_FILE}.bak"
 CRED_FILE="/etc/xray/warp_credentials.conf"
 
 check_dependencies() {
-    local need_install=false
-    if ! command -v jq &> /dev/null; then echo -e "${YELLOW}安装依赖: jq${PLAIN}"; need_install=true; fi
-    if ! command -v curl &> /dev/null; then echo -e "${YELLOW}安装依赖: curl${PLAIN}"; need_install=true; fi
-    if ! command -v python3 &> /dev/null; then echo -e "${YELLOW}安装依赖: python3${PLAIN}"; need_install=true; fi
-    
-    if [[ "$need_install" == "true" ]]; then
+    if ! command -v jq &> /dev/null || ! command -v curl &> /dev/null; then
+        echo -e "${YELLOW}安装必要依赖...${PLAIN}"
         apt-get update >/dev/null 2>&1
         apt-get install -y jq curl python3 wireguard-tools >/dev/null 2>&1 || yum install -y jq curl python3 wireguard-tools >/dev/null 2>&1
     fi
 }
 
-ensure_config_exists() {
-    if [[ -z "$CONFIG_FILE" ]]; then
-        echo -e "${RED}错误: 未检测到 Xray 配置文件 (config.json)！${PLAIN}"
-        echo -e "${GRAY}请先在菜单中安装 Xray 核心 (Install Core)。${PLAIN}"
-        exit 1
-    fi
-    # 备份
-    cp "$CONFIG_FILE" "$BACKUP_FILE"
-}
-
 # ============================================================
-# 1. 环境自适应检测 (严格模式)
+# 1. 环境与账号获取
 # ============================================================
 check_env() {
-    echo -e "${YELLOW}正在检测网络环境以适配 Endpoint...${PLAIN}"
-    
-    IS_IPV6_ONLY=false
-    FINAL_ENDPOINT="engage.cloudflareclient.com:2408" 
+    echo -e "${YELLOW}检测网络环境...${PLAIN}"
+    FINAL_ENDPOINT="engage.cloudflareclient.com:2408"
     FINAL_ENDPOINT_IP=""
-
     local ipv4_check=$(curl -4 -s -m 5 http://ip.sb 2>/dev/null)
-    
-    if [[ "$ipv4_check" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        echo -e "${GREEN}>>> 检测到有效 IPv4 环境。${PLAIN}"
-    else
-        IS_IPV6_ONLY=true
+    if [[ ! "$ipv4_check" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         local ep_ip="2606:4700:d0::a29f:c001"
         FINAL_ENDPOINT="[${ep_ip}]:2408"
         FINAL_ENDPOINT_IP="${ep_ip}"
-        echo -e "${SKYBLUE}>>> 检测到 IPv6-Only 环境，切换专用 Endpoint。${PLAIN}"
+        echo -e "${SKYBLUE}>>> 检测到 IPv6-Only 环境${PLAIN}"
     fi
-    export FINAL_ENDPOINT
-    export FINAL_ENDPOINT_IP
-}
-
-# ============================================================
-# 2. 账号注册与获取 (核心修复点)
-# ============================================================
-
-save_credentials() {
-    mkdir -p "$(dirname "$CRED_FILE")"
-    cat > "$CRED_FILE" <<EOF
-WARP_PRIV_KEY="$1"
-WARP_IPV6="$2"
-WARP_RESERVED="$3"
-EOF
 }
 
 register_warp() {
-    echo -e "${YELLOW}正在连接 Cloudflare API 注册新账号...${PLAIN}"
-    
-    # 生成密钥对
-    if ! command -v wg &> /dev/null; then apt-get install -y wireguard-tools || yum install -y wireguard-tools; fi
+    echo -e "${YELLOW}注册 WARP 免费账号...${PLAIN}"
     local priv_key=$(wg genkey)
     local pub_key=$(echo "$priv_key" | wg pubkey)
     local install_id=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 22)
-    
-    # 注册请求
     local result=$(curl -sX POST "https://api.cloudflareclient.com/v0a2158/reg" \
-        -H "User-Agent: okhttp/3.12.1" -H "Content-Type: application/json; charset=UTF-8" \
-        -d "{\"key\":\"${pub_key}\",\"install_id\":\"${install_id}\",\"fcm_token\":\"${install_id}:APA91bHuwEuLNj_${install_id}\",\"tos\":\"$(date -u +%FT%T.000Z)\",\"model\":\"Android\",\"serial_number\":\"${install_id}\",\"locale\":\"zh_CN\"}")
-    
-    local v4=$(echo "$result" | jq -r '.config.interface.addresses.v4')
+        -H "Content-Type: application/json; charset=UTF-8" \
+        -d "{\"key\":\"${pub_key}\",\"install_id\":\"${install_id}\",\"tos\":\"$(date -u +%FT%T.000Z)\",\"model\":\"Android\"}")
     local v6=$(echo "$result" | jq -r '.config.interface.addresses.v6')
     local client_id=$(echo "$result" | jq -r '.config.client_id')
-    
-    if [[ "$v6" == "null" || -z "$v6" ]]; then 
-        echo -e "${RED}注册失败，无法获取 IPv6 地址，请重试。${PLAIN}"
-        exit 1
-    fi
-    
-    # 转换 Reserved
-    local res_json=$(python3 -c "import base64, json; d=base64.b64decode('$client_id'); print(json.dumps([x for x in d[0:3]]))" 2>/dev/null)
-    # Xray 需要逗号分隔的字符串，例如 123,45,67
-    local res_str=$(echo "$res_json" | tr -d '[] ')
-
-    echo -e "${GREEN}注册成功！${PLAIN}"
-    export WG_KEY="$priv_key"
-    export WG_ADDR="$v6/128"
-    export WG_RESERVED="$res_str"
-    
-    save_credentials "$priv_key" "$v6/128" "$res_str"
+    if [[ "$v6" == "null" ]]; then echo -e "${RED}注册失败${PLAIN}"; exit 1; fi
+    local res_str=$(python3 -c "import base64; d=base64.b64decode('$client_id'); print(','.join([str(x) for x in d[0:3]]))")
+    export WG_KEY="$priv_key" WG_ADDR="$v6/128" WG_RESERVED="$res_str"
 }
 
 get_warp_account() {
-    echo -e "----------------------------------------------------"
-    echo -e "${SKYBLUE}配置 WARP 账号参数${PLAIN}"
-    
-    # 1. 尝试从环境变量获取 (Auto Mode)
     if [[ -n "$WARP_PRIV_KEY" ]]; then
-        export WG_KEY="$WARP_PRIV_KEY"
-        export WG_ADDR="$WARP_IPV6"
-        export WG_RESERVED=$(echo "$WARP_RESERVED" | tr -d '[] ')
-        return
-    fi
-
-    # 2. 尝试从本地凭证获取
-    if [[ -f "$CRED_FILE" ]]; then
-        source "$CRED_FILE"
-        echo -e "${GREEN}检测到本地已保存的凭证。${PLAIN}"
-        export WG_KEY="$WARP_PRIV_KEY"
-        export WG_ADDR="$WARP_IPV6"
-        export WG_RESERVED="$WARP_RESERVED"
-        return
-    fi
-
-    # 3. 手动模式交互
-    echo -e " 1. 自动注册免费账号 (推荐)"
-    echo -e " 2. 手动输入账号信息"
-    read -p "请选择 [1/2]: " choice
-
-    if [[ "$choice" == "2" ]]; then
-        read -p "私钥 (Private Key): " p_key
-        read -p "地址 (IPv6 Address, e.g. 2606:xxxx...): " addr
-        read -p "保留字段 (Reserved, e.g. 123,45,67): " reserved
-        export WG_KEY="$p_key"
-        export WG_ADDR="$addr"
-        export WG_RESERVED=$(echo "$reserved" | tr -d '[] ')
+        export WG_KEY="$WARP_PRIV_KEY" WG_ADDR="$WARP_IPV6" WG_RESERVED=$(echo "$WARP_RESERVED" | tr -d '[] ')
     else
-        register_warp
-    fi
-
-    if [[ -z "$WG_KEY" || -z "$WG_ADDR" ]]; then
-        echo -e "${RED}错误: WARP 账号信息缺失！${PLAIN}"
-        exit 1
+        echo -e " 1. 自动注册  2. 手动输入"
+        read -p "请选择: " c
+        if [[ "$c" == "2" ]]; then
+            read -p "私钥: " WG_KEY; read -p "IPv6地址: " WG_ADDR; read -p "Reserved: " WG_RESERVED
+        else register_warp; fi
     fi
 }
 
 # ============================================================
-# 3. 注入配置 (核心逻辑)
+# 2. 模式选择 (核心恢复点)
+# ============================================================
+select_mode() {
+    # 如果是自动化部署，直接跳过交互
+    [[ "$AUTO_SETUP" == "true" ]] && return
+
+    echo -e "----------------------------------------------------"
+    echo -e "${SKYBLUE}请选择 WARP 接管模式:${PLAIN}"
+    echo -e " 1. 仅流媒体分流 (Netflix/Disney+/OpenAI)"
+    echo -e " 2. IPv4 优先 (所有 IPv4 流量走 WARP)"
+    echo -e " 3. 指定节点接管 (按 Inbound Tag 选择)"
+    echo -e " 4. 全局全双栈接管"
+    read -p "选择 [1-4]: " m
+    export WARP_MODE_SELECT="${m:-1}"
+
+    if [[ "$WARP_MODE_SELECT" == "3" ]]; then
+        echo -e "${YELLOW}检测到以下 Inbound Tags:${PLAIN}"
+        jq -r '.inbounds[].tag' "$CONFIG_FILE" | nl
+        read -p "请输入要接管的 Tag (多个用逗号分隔): " tags
+        export WARP_INBOUND_TAGS="$tags"
+    fi
+}
+
+# ============================================================
+# 3. 配置注入
 # ============================================================
 inject_config() {
-    ensure_config_exists
-    echo -e "${YELLOW}正在注入 WARP 出站配置...${PLAIN}"
+    echo -e "${YELLOW}正在注入配置...${PLAIN}"
+    cp "$CONFIG_FILE" "$BACKUP_FILE"
     
-    # 1. 清理旧配置
-    jq '
-      .outbounds |= map(select(.tag != "warp-out")) |
-      .routing.rules |= map(select(.outboundTag != "warp-out"))
-    ' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+    # 清理
+    jq '.outbounds |= map(select(.tag != "warp-out")) | .routing.rules |= map(select(.outboundTag != "warp-out"))' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
 
-    # 2. 注入 Outbound
-    local res_json="[$(echo $WG_RESERVED | sed 's/,/,/g')]"
-    
-    jq --arg key "$WG_KEY" \
-       --arg addr "$WG_ADDR" \
-       --argjson res "$res_json" \
-       --arg endpoint "$FINAL_ENDPOINT" \
-       '.outbounds += [{
-            "tag": "warp-out",
-            "protocol": "wireguard",
-            "settings": {
-                "secretKey": $key,
-                "address": [$addr],
-                "peers": [{
-                    "publicKey": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
-                    "endpoint": $endpoint,
-                    "keepAlive": 15
-                }],
-                "reserved": $res,
-                "mtu": 1280
-            }
-       }]' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+    # 注入 Outbound
+    local res_json="[${WG_RESERVED}]"
+    jq --arg key "$WG_KEY" --arg addr "$WG_ADDR" --argjson res "$res_json" --arg ep "$FINAL_ENDPOINT" \
+       '.outbounds += [{ "tag": "warp-out", "protocol": "wireguard", "settings": { "secretKey": $key, "address": [$addr], "peers": [{ "publicKey": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=", "endpoint": $ep }], "reserved": $res } }]' \
+       "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
 
-    # 3. 注入路由规则
-    echo -e "${YELLOW}正在配置路由规则 (Anti-Loop & Routing)...${PLAIN}"
-    
-    # 3.1 构造防环回规则
-    local anti_loop_domains='["engage.cloudflareclient.com", "cloudflare.com"]'
-    local anti_loop_ips="[]"
-    if [[ -n "$FINAL_ENDPOINT_IP" ]]; then
-        anti_loop_ips="[\"${FINAL_ENDPOINT_IP}\"]"
-    fi
-    
-    local anti_loop_rule=$(jq -n \
-        --argjson d "$anti_loop_domains" \
-        --argjson i "$anti_loop_ips" \
-        '{ "type": "field", "domain": $d, "ip": $i, "outboundTag": "direct" }')
-    
-    # 3.2 构造分流规则
-    local tags="${WARP_INBOUND_TAGS}"
-    local routing_rule=""
-    
-    if [[ -n "$tags" ]]; then
-        echo -e "${GREEN}>>> 模式: 指定节点接管 (Tags: $tags)${PLAIN}"
-        local tag_json="[$(echo "$tags" | sed 's/,/","/g' | sed 's/^/"/' | sed 's/$/"/')]"
-        routing_rule=$(jq -n --argjson tags "$tag_json" \
-           '{ "type": "field", "inboundTag": $tags, "outboundTag": "warp-out" }')
-    elif [[ "$WARP_MODE_SELECT" == "4" ]]; then
-         echo -e "${GREEN}>>> 模式: 全局接管 (Catch-All)${PLAIN}"
-         routing_rule=$(jq -n '{ "type": "field", "network": "tcp,udp", "outboundTag": "warp-out" }')
-    else
-         echo -e "${YELLOW}警告: 未指定接管标签，仅注入防环回规则。${PLAIN}"
-    fi
+    # 构造路由规则
+    local anti_loop='{ "type": "field", "domain": ["engage.cloudflareclient.com"], "outboundTag": "direct" }'
+    local rule=""
+    case "$WARP_MODE_SELECT" in
+        2) rule='{ "type": "field", "network": "tcp,udp", "ip": ["0.0.0.0/0"], "outboundTag": "warp-out" }' ;;
+        3) 
+            local tag_json=$(echo "$WARP_INBOUND_TAGS" | jq -R 'split(",")')
+            rule=$(jq -n --argjson t "$tag_json" '{ "type": "field", "inboundTag": $t, "outboundTag": "warp-out" }') ;;
+        4) rule='{ "type": "field", "network": "tcp,udp", "outboundTag": "warp-out" }' ;;
+        *) rule='{ "type": "field", "domain": ["netflix.com","openai.com","google.com"], "outboundTag": "warp-out" }' ;;
+    esac
 
-    # 3.3 执行注入 (Prepend)
-    if [[ -n "$routing_rule" ]]; then
-        jq --argjson r1 "$anti_loop_rule" \
-           --argjson r2 "$routing_rule" \
-           '.routing.rules = [$r1, $r2] + .routing.rules' \
-           "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
-    else
-        jq --argjson r1 "$anti_loop_rule" \
-           '.routing.rules = [$r1] + .routing.rules' \
-           "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
-    fi
+    jq --argjson r1 "$anti_loop" --argjson r2 "$rule" '.routing.rules = [$r1, $r2] + .routing.rules' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
 }
 
 # ============================================================
-# 4. 重启验证
+# 主流程
 # ============================================================
-restart_xray() {
-    if ! jq . "$CONFIG_FILE" >/dev/null 2>&1; then
-        echo -e "${RED}JSON 语法错误，还原备份...${PLAIN}"
-        cp "$BACKUP_FILE" "$CONFIG_FILE"
-        exit 1
-    fi
-
-    systemctl restart xray
-    sleep 2
-    if systemctl is-active --quiet xray; then
-        echo -e "${GREEN}WARP 模块加载成功！Endpoint: $FINAL_ENDPOINT${PLAIN}"
-        echo -e "${GRAY}防环回规则已置顶。${PLAIN}"
-    else
-        echo -e "${RED}Xray 重启失败，正在还原配置...${PLAIN}"
-        cp "$BACKUP_FILE" "$CONFIG_FILE"
-        systemctl restart xray
-        exit 1
-    fi
-}
-
-# 执行流程
 check_dependencies
 check_env
 get_warp_account
+select_mode # 恢复模式选择环节
 inject_config
-restart_xray
+systemctl restart xray
+echo -e "${GREEN}配置结束，Xray 已重启。${PLAIN}"
