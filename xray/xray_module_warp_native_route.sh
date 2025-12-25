@@ -1,11 +1,9 @@
 #!/bin/bash
 
 # ============================================================
-#  Xray WARP Native Route 管理面板 (v3.5 Ultimate-Restore)
-#  - 核心还原: 恢复 IPv4 默认值为 172.16.0.2/32
-#  - 智能兼容: 支持 Reserved 输入 [0,0,0] 格式 (自动去括号)
-#  - 体验升级: 手动录入时自动读取旧凭证 + 智能默认值
-#  - 逻辑对齐: 1:1 复刻 Sing-box 的成熟交互体验
+#  Xray WARP Native Route 管理面板 (v3.6 Ultimate-BugFix)
+#  - 紧急修复: 修正“指定节点接管”提取到错误 Tag (序号) 的 Bug
+#  - 功能保持: 自动回填凭证 / 强制 IPv4 内网地址 / Sing-box 级体验
 # ============================================================
 
 RED='\033[0;31m'
@@ -85,7 +83,6 @@ register_warp() {
 }
 
 manual_warp() {
-    # 读取旧文件作为默认值
     local def_priv="" def_v4="" def_v6="" def_res=""
     if [[ -f "$CRED_FILE" ]]; then
         source "$CRED_FILE"
@@ -95,43 +92,32 @@ manual_warp() {
         def_res="$WARP_RESERVED"
     fi
 
-    # [修复] 如果旧文件里没有 IPv4，则设置默认值为标准值
     if [[ -z "$def_v4" ]]; then def_v4="172.16.0.2/32"; fi
-    # 如果旧文件里没有 Reserved，设置默认值
     if [[ -z "$def_res" ]]; then def_res="0,0,0"; fi
 
     echo -e "${GRAY}------------------------------------------------${PLAIN}"
     echo -e "${GRAY}提示: 直接按回车将使用 [ ] 内的默认值${PLAIN}"
     
-    # 1. 私钥
     local show_priv=""
     if [[ -n "$def_priv" ]]; then show_priv="${def_priv:0:6}......${def_priv: -4}"; fi
     read -p "私钥 ${GRAY}[默认: $show_priv]${PLAIN}: " k
     k=${k:-$def_priv}
     
-    # 2. IPv4
     read -p "IPv4地址 ${GRAY}[默认: $def_v4]${PLAIN}: " v4
     v4=${v4:-$def_v4}
     
-    # 3. IPv6
     read -p "IPv6地址 ${GRAY}[默认: $def_v6]${PLAIN}: " v6
     v6=${v6:-$def_v6}
     
-    # 4. Reserved (支持 [0,0,0] 输入)
     read -p "Reserved ${GRAY}[默认: $def_res]${PLAIN}: " r
     r=${r:-$def_res}
-    
-    # [核心修复] 智能清洗 Reserved 格式
-    # 去除可能包含的方括号 [] 和空格，确保变成 1,2,3 或 0,0,0 格式
     r=$(echo "$r" | tr -d '[] ')
     
-    # 校验
     if [[ -z "$k" || -z "$v6" ]]; then
         echo -e "${RED}错误: 私钥和 IPv6 地址不能为空！${PLAIN}"
         return 1
     fi
     
-    # 保存
     mkdir -p "$(dirname "$CRED_FILE")"
     echo "WARP_PRIV_KEY=\"$k\"" > "$CRED_FILE"
     echo "WARP_IPV4=\"$v4\"" >> "$CRED_FILE"
@@ -145,15 +131,11 @@ manual_warp() {
 load_credentials() {
     if [[ -f "$CRED_FILE" ]]; then
         source "$CRED_FILE"
-        
-        # 完整性检查: 即使有文件，如果缺项，也强制引导用户去补全
         if [[ -z "$WARP_IPV4" ]]; then
             echo -e "${RED}检测到旧凭证缺失关键参数 (IPv4)！${PLAIN}"
-            echo -e "${YELLOW}请选择 '1. 配置 WARP 凭证' -> '手动录入'。${PLAIN}"
-            echo -e "${YELLOW}系统将自动回填旧数据，您只需确认即可。${PLAIN}"
+            echo -e "${YELLOW}请选择 '1. 配置 WARP 凭证' -> '手动录入' 进行补全。${PLAIN}"
             return 1
         fi
-
         export WG_KEY="$WARP_PRIV_KEY" WG_IPV4="$WARP_IPV4" WG_IPV6="$WARP_IPV6" WG_RESERVED="$WARP_RESERVED"
         return 0
     elif [[ -n "$WARP_PRIV_KEY" ]]; then
@@ -185,8 +167,6 @@ apply_routing_rule() {
 
     jq '.outbounds |= map(select(.tag != "warp-out")) | .routing.rules |= map(select(.outboundTag != "warp-out"))' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
 
-    # 注入 Outbound
-    # 这里的 res_json 会自动加上 []，所以要求 WG_RESERVED 必须是纯数字逗号分隔
     local res_json="[${WG_RESERVED}]"
     local addr_json="[\"$WG_IPV6\"]"
     if [[ -n "$WG_IPV4" && "$WG_IPV4" != "null" ]]; then
@@ -200,7 +180,6 @@ apply_routing_rule() {
             "settings": { "secretKey": $key, "address": $addr, "peers": [{ "publicKey": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=", "endpoint": $ep, "keepAlive": 15 }], "reserved": $res, "mtu": 1280 } 
        }]' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
 
-    # 防环回
     local direct_tag="direct"
     if ! jq -e '.outbounds[] | select(.tag == "direct")' "$CONFIG_FILE" >/dev/null 2>&1; then
         if jq -e '.outbounds[] | select(.tag == "freedom")' "$CONFIG_FILE" >/dev/null 2>&1; then direct_tag="freedom"; fi
@@ -209,7 +188,6 @@ apply_routing_rule() {
     [[ -n "$FINAL_ENDPOINT_IP" ]] && anti_loop_ips="[\"${FINAL_ENDPOINT_IP}\"]"
     local anti_loop=$(jq -n --argjson i "$anti_loop_ips" --arg tag "$direct_tag" '{ "type": "field", "domain": ["engage.cloudflareclient.com", "cloudflare.com"], "ip": $i, "outboundTag": $tag }')
 
-    # 写入规则
     if [[ -n "$rule_json" ]]; then
          jq --argjson r1 "$anti_loop" --argjson r2 "$rule_json" '.routing.rules = [$r1, $r2] + .routing.rules' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
     else
@@ -257,7 +235,9 @@ mode_specific_node() {
     read -p "输入节点序号 (空格分隔): " selection
     local tags_json="[]"
     for num in $selection; do
-        local tag=$(echo "$node_list" | sed -n "${num}p" | awk -F'|' '{print $1}' | awk '{print $1}')
+        # [修复点] 之前错误提取了 $1 (序号)，现在修正为提取 $2 (Tag)
+        # awk -F'|' 拿到 " 1  tag ", 再 awk 默认分割，1是序号，2是Tag
+        local tag=$(echo "$node_list" | sed -n "${num}p" | awk -F'|' '{print $1}' | awk '{print $2}')
         [[ -n "$tag" ]] && tags_json=$(echo "$tags_json" | jq --arg t "$tag" '. + [$t]')
     done
     [[ "$tags_json" == "[]" ]] && return
@@ -284,7 +264,7 @@ show_menu() {
         local st="${RED}未配置${PLAIN}"
         if [[ -f "$CONFIG_FILE" ]]; then
             if jq -e '.outbounds[]? | select(.tag == "warp-out")' "$CONFIG_FILE" >/dev/null 2>&1; then
-                st="${GREEN}已配置 (v3.5 Ultimate)${PLAIN}"
+                st="${GREEN}已配置 (v3.6 Ultimate)${PLAIN}"
             fi
         fi
 
