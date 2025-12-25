@@ -1,8 +1,8 @@
 #!/bin/bash
 # ============================================================
-#  Commander Auto-Deploy (v7.2 Strict Pure - Fix Tag Sync)
+#  Commander Auto-Deploy (v7.3 Hy2 Smart Adapt)
 #  - 特性: 严格 IP 检测 | 纯净 URL (适配 Worker)
-#  - 修复: 修正 Xray Vision 标签不一致导致 WARP 接管失效的问题
+#  - 升级: 适配 Sing-box Hysteria 2 智能部署 (自签/ACME)
 # ============================================================
 
 # --- 基础定义 ---
@@ -210,11 +210,26 @@ deploy_logic() {
              SB_TAGS_ACC+="AnyTLS-${VAR_SB_ANYTLS_PORT},"
         fi
 
-        # E. Hysteria 2
+        # E. Hysteria 2 (智能部署)
         if [[ "$DEPLOY_SB_HY2" == "true" ]]; then
-             echo -e "${GREEN}>>> [SB] Hysteria 2 节点 (: ${VAR_SB_HY2_PORT})...${PLAIN}"
-             PORT=$VAR_SB_HY2_PORT run "sb_hy2_self.sh"
-             SB_TAGS_ACC+="Hy2-Self-${VAR_SB_HY2_PORT},"
+             echo -e "${GREEN}>>> [SB] Hysteria 2 节点 (Smart Mode)...${PLAIN}"
+             
+             # 传递参数给子脚本
+             export PORT="$VAR_SB_HY2_PORT"
+             export DOMAIN="$VAR_SB_HY2_DOMAIN"
+             
+             run "sb_hy2_deploy.sh"
+             
+             # Tag 累加逻辑 (必须与子脚本的 Tag 生成逻辑一致)
+             if [[ -n "$VAR_SB_HY2_DOMAIN" ]]; then
+                 # ACME 模式 Tag: Hy2-域名
+                 SB_TAGS_ACC+="Hy2-${VAR_SB_HY2_DOMAIN},"
+             else
+                 # 自签模式 Tag: Hy2-端口
+                 SB_TAGS_ACC+="Hy2-${VAR_SB_HY2_PORT},"
+             fi
+             
+             unset PORT DOMAIN
         fi
     fi
 
@@ -230,7 +245,6 @@ deploy_logic() {
             run "xray_vless_vision_reality.sh"
             unset PORT
             # [Fix] 这里的 Tag 必须与 xray_vless_vision_reality.sh 内部定义的 NODE_TAG 完全一致
-            # 原脚本定义: NODE_TAG="vless-vision-${PORT}"
             XRAY_TAGS_ACC+="vless-vision-${VAR_XRAY_VISION_PORT},"
         fi
 
@@ -320,7 +334,14 @@ show_dashboard() {
         [[ "$DEPLOY_SB_WS" == "true" ]]         && echo -e "  ├─ WS+TLS (CDN)    [Port: ${GREEN}$VAR_SB_WS_PORT${PLAIN}]"
         [[ "$DEPLOY_SB_WS_TUNNEL" == "true" ]]  && echo -e "  ├─ WS Tunnel       [Port: ${GREEN}$VAR_SB_WS_TUNNEL_PORT${PLAIN}]"
         [[ "$DEPLOY_SB_ANYTLS" == "true" ]]     && echo -e "  ├─ AnyTLS Reality  [Port: ${GREEN}$VAR_SB_ANYTLS_PORT${PLAIN}]"
-        [[ "$DEPLOY_SB_HY2" == "true" ]]        && echo -e "  └─ Hysteria 2      [Port: ${GREEN}$VAR_SB_HY2_PORT${PLAIN}]"
+        # 智能显示 Hy2 状态
+        if [[ "$DEPLOY_SB_HY2" == "true" ]]; then
+            if [[ -n "$VAR_SB_HY2_DOMAIN" ]]; then
+                echo -e "  └─ Hysteria 2      [ACME: ${GREEN}${VAR_SB_HY2_DOMAIN}${PLAIN}]"
+            else
+                echo -e "  └─ Hysteria 2      [Self: ${GREEN}${VAR_SB_HY2_PORT}${PLAIN}]"
+            fi
+        fi
         has_item=true
     fi
     
@@ -374,7 +395,7 @@ menu_protocols() {
         echo -e " 2. [$(get_status $DEPLOY_SB_WS)] Vless_WS_TLS (CDN_回源)"
         echo -e " 3. [$(get_status $DEPLOY_SB_WS_TUNNEL)] Vless_WS_Tunnel"
         echo -e " 4. [$(get_status $DEPLOY_SB_ANYTLS)] AnyTLS_Reality"
-        echo -e " 5. [$(get_status $DEPLOY_SB_HY2)] Hysteria_2"
+        echo -e " 5. [$(get_status $DEPLOY_SB_HY2)] Hysteria_2 (智能部署)"
         echo -e "${YELLOW}--- Xray 体系 ---${PLAIN}"
         echo -e " 6. [$(get_status $DEPLOY_XRAY_VISION)] Vless_Vision_Reality"
         echo -e " 7. [$(get_status $DEPLOY_XRAY_WS)] Vless_WS_TLS (CDN_回源)"
@@ -398,8 +419,22 @@ menu_protocols() {
                 if [[ "$DEPLOY_SB_ANYTLS" == "true" ]]; then DEPLOY_SB_ANYTLS=false; else 
                     DEPLOY_SB_ANYTLS=true; INSTALL_SB=true; read -p "端口(8443): " p; VAR_SB_ANYTLS_PORT=${p:-8443}; fi ;;
             5) 
-                if [[ "$DEPLOY_SB_HY2" == "true" ]]; then DEPLOY_SB_HY2=false; else 
-                    DEPLOY_SB_HY2=true; INSTALL_SB=true; read -p "UDP端口(10086): " p; VAR_SB_HY2_PORT=${p:-10086}; fi ;;
+                # 智能 Hysteria 2 入口
+                if [[ "$DEPLOY_SB_HY2" == "true" ]]; then 
+                    DEPLOY_SB_HY2=false
+                    unset VAR_SB_HY2_PORT VAR_SB_HY2_DOMAIN
+                else 
+                    DEPLOY_SB_HY2=true; INSTALL_SB=true
+                    echo -e "${YELLOW}[Hysteria 2 设置]${PLAIN}"
+                    echo -e "  提示: 若要使用 ACME 申请证书，请输入域名；留空则使用自签证书。"
+                    read -p "  域名 (Optional): " d; VAR_SB_HY2_DOMAIN=$d
+                    
+                    if [[ -n "$VAR_SB_HY2_DOMAIN" ]]; then
+                        read -p "  端口 (443): " p; VAR_SB_HY2_PORT=${p:-443}
+                    else
+                        read -p "  UDP端口 (10086): " p; VAR_SB_HY2_PORT=${p:-10086}
+                    fi
+                fi ;;
             6) 
                 if [[ "$DEPLOY_XRAY_VISION" == "true" ]]; then DEPLOY_XRAY_VISION=false; else 
                     DEPLOY_XRAY_VISION=true; INSTALL_XRAY=true; read -p "端口(1443): " p; VAR_XRAY_VISION_PORT=${p:-1443}; fi ;;
