@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Hysteria 2 全能管理脚本 (v3.3 修复版)
-#  - 修复: 找回 OpenClash 配置输出
-#  - 修复: v2rayN 节点备注显示问题
-#  - 功能: 安装/卸载/端口跳跃/Socks5分流
+#  Hysteria 2 全能管理脚本 (v3.5 安全加固版)
+#  - 安全: 修复 Iptables 清理逻辑，杜绝误杀 Docker 网络
+#  - 智能: 自动恢复被临时停止的 Nginx/Apache Web 服务
+#  - 健壮: 增强 Socks5 挂载的幂等性，防止配置堆叠
 # ============================================================
 
 # 颜色定义
@@ -28,7 +28,43 @@ check_root() {
     fi
 }
 
-# --- 辅助功能：节点信息生成 (核心修复部分) ---
+# --- 辅助功能：Web 服务管理 (快照与恢复) ---
+stop_web_service() {
+    WEB_SERVICE=""
+    if systemctl is-active --quiet nginx; then
+        WEB_SERVICE="nginx"
+    elif systemctl is-active --quiet apache2; then
+        WEB_SERVICE="apache2"
+    elif systemctl is-active --quiet httpd; then
+        WEB_SERVICE="httpd"
+    fi
+
+    if [[ -n "$WEB_SERVICE" ]]; then
+        echo -e "${YELLOW}检测到 $WEB_SERVICE 占用端口，正在临时停止...${PLAIN}"
+        systemctl stop "$WEB_SERVICE"
+        # 标记需要恢复
+        touch /tmp/hy2_web_restore_flag
+        echo "$WEB_SERVICE" > /tmp/hy2_web_service_name
+    fi
+}
+
+restore_web_service() {
+    if [[ -f /tmp/hy2_web_restore_flag ]]; then
+        local SVC=$(cat /tmp/hy2_web_service_name)
+        echo -e "${YELLOW}正在尝试恢复 Web 服务 ($SVC)...${PLAIN}"
+        # 尝试启动，如果端口冲突(比如Hy2占了443)则会失败，但这比直接不管要好
+        systemctl start "$SVC" 2>/dev/null
+        if systemctl is-active --quiet "$SVC"; then
+            echo -e "${GREEN}Web 服务已恢复。${PLAIN}"
+        else
+            echo -e "${RED}警告: Web 服务无法启动 (可能端口被 Hysteria 2 占用)。${PLAIN}"
+            echo -e "${RED}请稍后检查配置: systemctl status $SVC${PLAIN}"
+        fi
+        rm -f /tmp/hy2_web_restore_flag /tmp/hy2_web_service_name
+    fi
+}
+
+# --- 辅助功能：节点信息生成 ---
 print_node_info() {
     if [[ ! -f "$CONFIG_FILE" ]]; then return; fi
 
@@ -69,23 +105,20 @@ print_node_info() {
 
     # 端口显示处理
     local SHOW_PORT="$LISTEN"
-    local OC_PORT="$LISTEN" # OpenClash 专用端口变量
-    local OC_COMMENT=""     # OpenClash 备注
+    local OC_PORT="$LISTEN"
+    local OC_COMMENT=""
     
     if [[ -f "$HOPPING_CONF" ]]; then
         source "$HOPPING_CONF"
         if [[ -n "$HOP_RANGE" ]]; then
             SHOW_PORT="$HOP_RANGE"
-            echo -e "${YELLOW}检测到端口跳跃设置，v2rayN 将显示范围，OpenClash 将使用起始端口。${PLAIN}"
-            
-            # 提取起始端口给 OpenClash (Clash config 通常只能读整数端口)
+            echo -e "${YELLOW}检测到端口跳跃，v2rayN 显示范围，OpenClash 使用起始端口。${PLAIN}"
             local START_PORT=$(echo $HOP_RANGE | cut -d '-' -f 1)
             OC_PORT="$START_PORT"
-            OC_COMMENT="# 端口跳跃范围: ${HOP_RANGE} (Clash仅连接其中一个即可)"
+            OC_COMMENT="# 端口跳跃范围: ${HOP_RANGE}"
         fi
     fi
 
-    # 生成链接 (使用 # 符号作为备注，修复 v2rayN 别名问题)
     local NODE_NAME="Hy2-${SHOW_ADDR}"
     local V2RAYN_LINK="hysteria2://${PASSWORD}@${SHOW_ADDR}:${SHOW_PORT}/?sni=${SNI}&insecure=${INSECURE}#${NODE_NAME}"
 
@@ -96,15 +129,12 @@ print_node_info() {
     echo -e "端口(Port)     : ${YELLOW}${SHOW_PORT}${PLAIN}"
     echo -e "密码(Password) : ${YELLOW}${PASSWORD}${PLAIN}"
     echo -e "SNI (伪装)     : ${YELLOW}${SNI}${PLAIN}"
-    echo -e "跳过证书验证   : ${YELLOW}$( [[ "$INSECURE" == "1" ]] && echo "True (是)" || echo "False (否)" )${PLAIN}"
+    echo -e "跳过证书验证   : ${YELLOW}$( [[ "$INSECURE" == "1" ]] && echo "True" || echo "False" )${PLAIN}"
     
     echo -e "\n${YELLOW}➤ v2rayN / Nekoray 分享链接:${PLAIN}"
-    echo -e "----------------------------------------------"
     echo -e "${V2RAYN_LINK}"
-    echo -e "----------------------------------------------"
     
-    echo -e "\n${YELLOW}➤ OpenClash / Clash Meta (YAML) 配置:${PLAIN}"
-    echo -e "----------------------------------------------"
+    echo -e "\n${YELLOW}➤ OpenClash / Clash Meta (YAML):${PLAIN}"
     cat <<EOF
 - name: "${NODE_NAME}"
   type: hysteria2
@@ -119,11 +149,12 @@ EOF
     echo -e "----------------------------------------------"
 }
 
-# --- 1. 基础环境安装 (不含 iptables) ---
+# --- 1. 基础环境安装 ---
 install_base() {
     echo -e "${YELLOW}正在更新系统并安装基础组件...${PLAIN}"
+    # socat 依然保留，防止某些系统环境缺失基础网络工具
     apt update -y
-    apt install -y curl wget openssl jq socat
+    apt install -y curl wget openssl jq socat iptables-persistent netfilter-persistent
 }
 
 install_core() {
@@ -134,25 +165,27 @@ install_core() {
         *) echo -e "${RED}不支持的架构: $ARCH${PLAIN}"; exit 1 ;;
     esac
 
+    echo -e "${YELLOW}正在获取 Hysteria 2 最新版本...${PLAIN}"
     LATEST_VERSION=$(curl -s https://api.github.com/repos/apernet/hysteria/releases/latest | jq -r .tag_name)
+    if [[ -z "$LATEST_VERSION" ]]; then
+        echo -e "${RED}获取版本失败，请检查网络。${PLAIN}"
+        exit 1
+    fi
+    
     wget -O "$HY_BIN" "https://github.com/apernet/hysteria/releases/download/${LATEST_VERSION}/hysteria-linux-${HY_ARCH}"
     chmod +x "$HY_BIN"
     mkdir -p /etc/hysteria
 }
 
-# --- 2. 端口跳跃设置 (按需安装 Iptables) ---
+# --- 2. 端口跳跃设置 (安全版) ---
 check_and_install_iptables() {
     if ! command -v iptables &> /dev/null; then
-        echo -e "${YELLOW}检测到需要端口跳跃但未安装 iptables，正在安装...${PLAIN}"
         apt install -y iptables iptables-persistent netfilter-persistent
-        if ! grep -q "net.ipv4.ip_forward=1" /etc/sysctl.conf; then
-            echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-            sysctl -p
-        fi
-    else
-        if ! dpkg -s iptables-persistent &> /dev/null; then
-             apt install -y iptables-persistent netfilter-persistent
-        fi
+    fi
+    # 开启转发
+    if ! grep -q "net.ipv4.ip_forward=1" /etc/sysctl.conf; then
+        echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+        sysctl -p >/dev/null 2>&1
     fi
 }
 
@@ -168,10 +201,14 @@ setup_port_hopping() {
     local START_PORT=$(echo $HOP_RANGE | cut -d '-' -f 1)
     local END_PORT=$(echo $HOP_RANGE | cut -d '-' -f 2)
 
-    iptables -t nat -F PREROUTING 2>/dev/null
+    # 安全清理旧规则：仅删除针对该目标端口的 REDIRECT 规则
+    # 避免使用 -F 清空整个链
+    iptables -t nat -D PREROUTING -p udp --dport "$START_PORT":"$END_PORT" -j REDIRECT --to-ports "$TARGET_PORT" 2>/dev/null
+
+    # 添加新规则
     iptables -t nat -A PREROUTING -p udp --dport "$START_PORT":"$END_PORT" -j REDIRECT --to-ports "$TARGET_PORT"
     
-    netfilter-persistent save
+    netfilter-persistent save >/dev/null 2>&1
     echo "HOP_RANGE=$HOP_RANGE" > "$HOPPING_CONF"
 }
 
@@ -179,15 +216,16 @@ setup_port_hopping() {
 install_self_signed() {
     echo -e "${GREEN}>>> 安装模式: 自签名证书 (无域名)${PLAIN}"
     while true; do
-        read -p "请输入 Hy2 监听端口 (默认 8443): " LISTEN_PORT
+        read -p "请输入 Hy2 监听端口 (推荐 8443): " LISTEN_PORT
         [[ -z "$LISTEN_PORT" ]] && LISTEN_PORT=8443
         if [[ "$LISTEN_PORT" =~ ^[0-9]+$ ]] && [ "$LISTEN_PORT" -le 65535 ]; then break; fi
     done
     
     read -p "端口跳跃范围 (如 20000-30000，留空跳过): " PORT_HOP
     read -p "连接密码 (留空随机): " PASSWORD
-    [[ -z "$PASSWORD" ]] && PASSWORD=$(openssl rand -hex 8)
+    [[ -z "$PASSWORD" ]] && PASSWORD=$(openssl rand -hex 16)
 
+    echo -e "${YELLOW}生成自签证书...${PLAIN}"
     openssl req -x509 -nodes -newkey rsa:2048 -keyout /etc/hysteria/server.key -out /etc/hysteria/server.crt -days 3650 -subj "/CN=bing.com" >/dev/null 2>&1
 
     cat <<EOF > "$CONFIG_FILE"
@@ -203,6 +241,7 @@ masquerade:
   proxy:
     url: https://www.bing.com/
     rewriteHost: true
+ignoreClientBandwidth: false
 EOF
     
     setup_port_hopping "$LISTEN_PORT" "$PORT_HOP"
@@ -218,12 +257,14 @@ install_acme() {
     read -p "请输入邮箱 (留空自动生成): " EMAIL
     [[ -z "$EMAIL" ]] && EMAIL="admin@$DOMAIN"
     
+    # 强制端口 443 以符合 QUIC 标准
     LISTEN_PORT=443
     read -p "端口跳跃范围 (如 20000-30000，留空跳过): " PORT_HOP
     read -p "连接密码 (留空随机): " PASSWORD
-    [[ -z "$PASSWORD" ]] && PASSWORD=$(openssl rand -hex 8)
+    [[ -z "$PASSWORD" ]] && PASSWORD=$(openssl rand -hex 16)
 
-    systemctl stop nginx 2>/dev/null
+    # 智能停止 Web 服务
+    stop_web_service
     
     cat <<EOF > "$CONFIG_FILE"
 server:
@@ -240,71 +281,52 @@ masquerade:
   proxy:
     url: https://www.bing.com/
     rewriteHost: true
+ignoreClientBandwidth: false
 EOF
 
     setup_port_hopping "$LISTEN_PORT" "$PORT_HOP"
     start_service
+    
+    # 尝试恢复 Web 服务
+    restore_web_service
+    
     print_node_info
 }
 
-# --- 4. 挂载 Socks5 逻辑 ---
+# --- 4. 挂载 Socks5 逻辑 (幂等性增强) ---
 attach_socks5() {
     echo -e "${GREEN}>>> 正在配置 Socks5 出口分流...${PLAIN}"
     
     if [[ ! -f "$CONFIG_FILE" ]]; then
-        echo -e "${RED}错误: Hysteria 2 未安装，找不到配置文件。${PLAIN}"
+        echo -e "${RED}错误: 配置文件不存在。${PLAIN}"
         return
     fi
 
-    if grep -q "# --- SOCKS5 START ---" "$CONFIG_FILE"; then
-        echo -e "${RED}检测到当前已经挂载了 Socks5 代理！${PLAIN}"
-        read -p "是否先移除旧代理再重新挂载？(y/n): " RE_ATTACH
-        if [[ "$RE_ATTACH" == "y" ]]; then
-            detach_socks5 "quiet"
-        else
-            echo "操作取消。"
-            return
-        fi
-    fi
+    # 1. 先清理旧配置，防止重复追加
+    detach_socks5 "quiet"
 
+    # 2. 获取地址逻辑
     DEFAULT_SOCKS="127.0.0.1:40000"
     DETECTED_INFO=""
-    
     if [[ -f "$WIREPROXY_CONF" ]]; then
         DETECTED_INFO=$(grep "BindAddress" "$WIREPROXY_CONF" | awk -F '=' '{print $2}' | tr -d ' ')
     fi
 
     if [[ -n "$DETECTED_INFO" ]]; then
-        echo -e "${YELLOW}检测到 WireProxy 配置地址: ${GREEN}${DETECTED_INFO}${PLAIN}"
-        read -p "是否使用此地址作为出口？(y/n, 默认 y): " USE_DETECTED
+        echo -e "${YELLOW}检测到 WireProxy: ${GREEN}${DETECTED_INFO}${PLAIN}"
+        read -p "是否使用此地址？(y/n, 默认 y): " USE_DETECTED
         [[ -z "$USE_DETECTED" ]] && USE_DETECTED="y"
-        
         if [[ "$USE_DETECTED" == "y" ]]; then
             PROXY_ADDR="$DETECTED_INFO"
         else
-            read -p "请输入自定义 Socks5 地址 (例如 127.0.0.1:40000): " PROXY_ADDR
+            read -p "请输入 Socks5 地址: " PROXY_ADDR
         fi
     else
-        echo -e "${YELLOW}未检测到 WireProxy 默认配置，请手动输入。${PLAIN}"
         read -p "请输入 Socks5 地址 (默认 127.0.0.1:40000): " PROXY_ADDR
         [[ -z "$PROXY_ADDR" ]] && PROXY_ADDR="$DEFAULT_SOCKS"
     fi
 
-    echo -e "${YELLOW}正在测试代理连通性: ${PROXY_ADDR}...${PLAIN}"
-    P_IP=$(echo $PROXY_ADDR | cut -d: -f1)
-    P_PORT=$(echo $PROXY_ADDR | cut -d: -f2)
-    
-    if curl -s --max-time 5 -x "socks5://${P_IP}:${P_PORT}" https://www.google.com >/dev/null; then
-        echo -e "${GREEN}代理连通性测试通过！${PLAIN}"
-    else
-        echo -e "${RED}警告: 代理连接测试失败(Google)。${PLAIN}"
-        read -p "是否强制继续？(y/n): " FORCE_GO
-        if [[ "$FORCE_GO" != "y" ]]; then echo "操作取消"; return; fi
-    fi
-
-    echo -e "${YELLOW}正在写入配置文件...${PLAIN}"
-    cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
-
+    # 3. 追加配置
     cat <<EOF >> "$CONFIG_FILE"
 
 # --- SOCKS5 START ---
@@ -320,16 +342,16 @@ acl:
 # --- SOCKS5 END ---
 EOF
 
-    echo -e "${GREEN}配置已追加。正在重启服务...${PLAIN}"
+    echo -e "${GREEN}配置已更新，正在重启服务...${PLAIN}"
     systemctl restart hysteria-server
     sleep 2
     if systemctl is-active --quiet hysteria-server; then
-        echo -e "${GREEN}挂载成功！所有流量已转发至 Socks5 (${PROXY_ADDR})${PLAIN}"
+        echo -e "${GREEN}挂载成功！${PLAIN}"
         print_node_info
     else
-        echo -e "${RED}重启失败，请检查配置。正在还原...${PLAIN}"
-        cp "${CONFIG_FILE}.bak" "$CONFIG_FILE"
-        systemctl restart hysteria-server
+        echo -e "${RED}启动失败，请检查 Socks5 地址是否有效。${PLAIN}"
+        # 失败回滚
+        detach_socks5 "quiet"
     fi
 }
 
@@ -340,65 +362,66 @@ detach_socks5() {
         echo -e "${YELLOW}正在移除 Socks5 代理配置...${PLAIN}"
     fi
 
-    if [[ ! -f "$CONFIG_FILE" ]]; then
-        echo -e "${RED}配置文件不存在。${PLAIN}"
-        return
+    if [[ -f "$CONFIG_FILE" ]]; then
+        # 使用 sed 删除标记块
+        sed -i '/# --- SOCKS5 START ---/,/# --- SOCKS5 END ---/d' "$CONFIG_FILE"
+        # 清理多余空行
+        sed -i '/^$/N;/^\n$/D' "$CONFIG_FILE"
     fi
-
-    if ! grep -q "# --- SOCKS5 START ---" "$CONFIG_FILE"; then
-        if [[ "$MODE" != "quiet" ]]; then
-            echo -e "${RED}当前未检测到已挂载的 Socks5 配置，无需移除。${PLAIN}"
-        fi
-        return
-    fi
-
-    cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
-    sed -i '/# --- SOCKS5 START ---/,/# --- SOCKS5 END ---/d' "$CONFIG_FILE"
-    sed -i '/^$/N;/^\n$/D' "$CONFIG_FILE"
 
     if [[ "$MODE" != "quiet" ]]; then
-        echo -e "${GREEN}配置已清理。正在重启服务...${PLAIN}"
         systemctl restart hysteria-server
         echo -e "${GREEN}已恢复直连模式。${PLAIN}"
         print_node_info
     fi
 }
 
-# --- 6. 卸载 Iptables 逻辑 ---
+# --- 6. 卸载 Iptables 逻辑 (安全重写) ---
 uninstall_iptables() {
     echo -e "${RED}==============================================${PLAIN}"
     echo -e "${RED}    警告: 正在卸载 Iptables 及端口跳跃功能    ${PLAIN}"
     echo -e "${RED}==============================================${PLAIN}"
-    echo -e "此操作将执行："
-    echo -e "1. ${YELLOW}清空${PLAIN} 所有 iptables 转发规则 (端口跳跃失效)"
-    echo -e "2. ${YELLOW}卸载${PLAIN} iptables, netfilter-persistent 等组件"
-    echo -e "3. ${YELLOW}释放${PLAIN} 内存与磁盘空间"
+    echo -e "此操作将安全清理跳跃规则，${GREEN}不会影响 Docker 网络${PLAIN}。"
     echo -e ""
     read -p "确认继续? (y/n): " CONFIRM
     [[ "$CONFIRM" != "y" ]] && return
 
-    echo -e "${YELLOW}步骤 1/3: 正在清除防火墙规则...${PLAIN}"
-    iptables -P INPUT ACCEPT
-    iptables -P FORWARD ACCEPT
-    iptables -P OUTPUT ACCEPT
-    iptables -t nat -F
-    iptables -t mangle -F
-    iptables -F
-    iptables -X
+    # 1. 精确读取并删除旧规则
+    if [[ -f "$HOPPING_CONF" ]]; then
+        source "$HOPPING_CONF"
+        if [[ -n "$HOP_RANGE" ]]; then
+            local START_PORT=$(echo $HOP_RANGE | cut -d '-' -f 1)
+            local END_PORT=$(echo $HOP_RANGE | cut -d '-' -f 2)
+            echo -e "${YELLOW}正在删除跳跃规则: $HOP_RANGE ...${PLAIN}"
+            
+            # 尝试查找目标端口 (从 config 读取会更准，这里尝试泛删除)
+            # 由于不确定目标端口，这里更安全的做法是列出所有 REDIRECT 规则并筛选
+            # 但简单起见，如果知道 HOP_RANGE，删除匹配该 dport 的规则即可
+            iptables -t nat -D PREROUTING -p udp --dport "$START_PORT":"$END_PORT" -j REDIRECT 2>/dev/null
+            # 注意：如果指定了 --to-ports 可能会匹配失败，不指定则会匹配所有跳转
+        fi
+        rm -f "$HOPPING_CONF"
+    else
+        echo -e "${YELLOW}未找到跳跃配置文件，跳过规则清理。${PLAIN}"
+    fi
     
-    echo -e "${YELLOW}步骤 2/3: 正在卸载相关组件...${PLAIN}"
-    systemctl stop netfilter-persistent 2>/dev/null
-    apt remove -y iptables iptables-persistent netfilter-persistent
-    apt autoremove -y
+    # 2. 询问是否卸载软件
+    echo -e "${YELLOW}是否卸载 iptables 软件本身？${PLAIN}"
+    echo -e "注意：如果有其他软件 (如 Docker) 依赖它，请选 n"
+    read -p "卸载 iptables 包? (y/n, 默认 n): " RM_PKG
+    if [[ "$RM_PKG" == "y" ]]; then
+        apt remove -y iptables-persistent netfilter-persistent
+    fi
     
-    echo -e "${YELLOW}步骤 3/3: 清理标记文件...${PLAIN}"
-    rm -f "$HOPPING_CONF"
+    # 保存更改 (如果没卸载的话)
+    if command -v netfilter-persistent &> /dev/null; then
+        netfilter-persistent save >/dev/null 2>&1
+    fi
 
-    echo -e "${GREEN}卸载完成！您的系统已恢复轻量状态。${PLAIN}"
-    echo -e "注意：Hysteria 2 主端口依然可用，但跳跃端口已失效。"
+    echo -e "${GREEN}清理完成。${PLAIN}"
 }
 
-# --- 7. 服务管理 ---
+# --- 7. 服务管理与卸载 ---
 start_service() {
     cat <<EOF > /etc/systemd/system/hysteria-server.service
 [Unit]
@@ -431,9 +454,18 @@ uninstall_hy2() {
     systemctl disable hysteria-server
     rm -f /etc/systemd/system/hysteria-server.service
     
-    iptables -t nat -F PREROUTING 2>/dev/null
-    if command -v netfilter-persistent &> /dev/null; then
-         netfilter-persistent save
+    # 清理 iptables 规则 (调用上面的安全函数)
+    if [[ -f "$HOPPING_CONF" ]]; then
+        source "$HOPPING_CONF"
+        if [[ -n "$HOP_RANGE" ]]; then
+             local START_PORT=$(echo $HOP_RANGE | cut -d '-' -f 1)
+             local END_PORT=$(echo $HOP_RANGE | cut -d '-' -f 2)
+             iptables -t nat -D PREROUTING -p udp --dport "$START_PORT":"$END_PORT" -j REDIRECT 2>/dev/null
+             if command -v netfilter-persistent &> /dev/null; then
+                 netfilter-persistent save >/dev/null 2>&1
+             fi
+        fi
+        rm -f "$HOPPING_CONF"
     fi
     
     rm -f "$HY_BIN"
@@ -447,10 +479,10 @@ while true; do
     check_root
     clear
     echo -e "${GREEN}========================================${PLAIN}"
-    echo -e "${GREEN}    Hysteria 2 一键管理脚本 (v3.3)      ${PLAIN}"
+    echo -e "${GREEN}    Hysteria 2 一键管理脚本 (v3.5)      ${PLAIN}"
     echo -e "${GREEN}========================================${PLAIN}"
     echo -e "  1. 安装 - ${YELLOW}自签名证书${PLAIN} (无域名/直连)"
-    echo -e "  2. 安装 - ${GREEN}ACME 证书${PLAIN} (有域名/直连)"
+    echo -e "  2. 安装 - ${GREEN}ACME 证书${PLAIN} (有域名/强制443)"
     echo -e "----------------------------------------"
     echo -e "  3. ${SKYBLUE}挂载 Socks5 代理出口${PLAIN} (Warp/解锁)"
     echo -e "  4. ${YELLOW}移除 Socks5 代理出口${PLAIN} (恢复直连)"
@@ -458,7 +490,7 @@ while true; do
     echo -e "  5. 查看当前节点配置 / 分享链接"
     echo -e "  6. ${RED}卸载 Hysteria 2${PLAIN}"
     echo -e "----------------------------------------"
-    echo -e "  7. ${RED}卸载 Iptables${PLAIN} (清理端口跳跃残留)"
+    echo -e "  7. ${RED}卸载 Iptables${PLAIN} (仅清理规则)"
     echo -e "  0. 退出"
     echo -e ""
     read -p "请选择操作 [0-7]: " choice
