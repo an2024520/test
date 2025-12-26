@@ -3,6 +3,7 @@ TUN address fields are merged
 inet4_address and inet6_address are merged into address, inet4_route_address and inet6_route_address are merged into route_address, inet4_route_exclude_address and inet6_route_exclude_address are merged into route_exclude_address.
 References
 TUN
+
 Deprecated:
 {
   "inbounds": [
@@ -27,6 +28,7 @@ Deprecated:
     }
   ]
 }
+
 New:
 {
   "inbounds": [
@@ -49,6 +51,7 @@ New:
     }
   ]
 }
+
 
 
 
