@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box Native WARP 管理模块 (v3.6 Ultimate-Fix)
-#  - 架构: Endpoint + Detour (v1.10+ 标准)
-#  - 修复: 修正路由插入顺序导致的“全局模式死循环”BUG
-#  - 增强: 防环回规则增加 IPv6 Endpoint IP 白名单
-#  - 补丁: 修复手动模式下因缺少 config.json 导致无法启动的问题
+#  Sing-box Native WARP 管理模块 (v3.7 Ultimate-Fix)
+#  - 架构: Endpoint Direct Route (适配 Sing-box 1.12+)
+#  - 修复: 移除 direct outbound detour 导致的语法错误
+#  - 优化: 默认使用 IP 连接 Endpoint，规避 DNS 解析失败
+#  - 增强: 改进 jq 注入逻辑与错误处理机制
 # ============================================================
 
 RED='\033[0;31m'
@@ -15,7 +15,7 @@ SKYBLUE='\033[0;36m'
 PLAIN='\033[0m'
 
 # ==========================================
-# 1. 环境初始化 (修复版)
+# 1. 环境初始化
 # ==========================================
 
 CONFIG_FILE=""
@@ -26,8 +26,7 @@ for p in "${PATHS[@]}"; do
     if [[ -f "$p" ]]; then CONFIG_FILE="$p"; break; fi
 done
 
-# --- [修复逻辑 Start] ---
-# 自动模式下保持严格检查，防止流程错乱；手动模式下允许空配置启动
+# 自动模式下保持严格检查
 if [[ "$AUTO_SETUP" == "true" ]]; then
     if [[ -z "$CONFIG_FILE" ]]; then
         echo -e "${RED}错误: [自动模式] 未检测到 config.json 配置文件！流程终止。${PLAIN}"
@@ -36,10 +35,9 @@ if [[ "$AUTO_SETUP" == "true" ]]; then
 else
     if [[ -z "$CONFIG_FILE" ]]; then
         CONFIG_FILE="/etc/sing-box/config.json"
-        echo -e "${YELLOW}提示: 未找到现有 config.json，将在操作时尝试创建或写入默认路径。${PLAIN}"
+        echo -e "${YELLOW}提示: 未找到现有 config.json，操作时将尝试创建。${PLAIN}"
     fi
 fi
-# --- [修复逻辑 End] ---
 
 mkdir -p "$(dirname "$CRED_FILE")"
 
@@ -57,19 +55,19 @@ ensure_python() {
 
 # --- 环境检测与 Endpoint 适配 ---
 check_env() {
-    echo -e "${YELLOW}正在执行严格的网络环境检测...${PLAIN}"
+    echo -e "${YELLOW}正在执行网络环境检测...${PLAIN}"
     
-    # 默认值
-    FINAL_EP_ADDR="engage.cloudflareclient.com"
+    # 默认值: 强制使用 IP，避免 sing-box check 时的 DNS 解析超时
+    FINAL_EP_ADDR="162.159.192.1"
     FINAL_EP_PORT=2408
 
-    # 严格检测 IPv4 (使用 ip.sb)
-    local ipv4_check=$(curl -4 -s -m 5 http://ip.sb 2>/dev/null)
+    # 简单的 IPv4 连通性测试
+    local ipv4_check=$(curl -4 -s -m 3 http://ip.sb 2>/dev/null)
     
     if [[ "$ipv4_check" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         echo -e "${GREEN}>>> 检测到有效 IPv4 环境 (IP: $ipv4_check)。${PLAIN}"
     else
-        # IPv6-Only: 切换为官方 IPv6 Anycast IP
+        # IPv6-Only 环境切换为官方 IPv6 Endpoint
         FINAL_EP_ADDR="2606:4700:d0::a29f:c001"
         echo -e "${SKYBLUE}>>> 检测到纯 IPv6 环境，切换为专用 Endpoint: ${FINAL_EP_ADDR}${PLAIN}"
     fi
@@ -79,18 +77,17 @@ check_env() {
 }
 
 restart_sb() {
-    mkdir -p /var/log/sing-box/ && chmod 777 /var/log/sing-box/ >/dev/null 2>&1
+    # 确保日志权限
+    mkdir -p /var/log/sing-box/
+    chown -R root:root /var/log/sing-box/ >/dev/null 2>&1
+    
     echo -e "${YELLOW}重启 Sing-box 服务...${PLAIN}"
     
-  if command -v sing-box &> /dev/null; then
-        echo -e "${YELLOW}正在执行语法校验...${PLAIN}"
-        # 1. 去掉 > /dev/null 2>&1，让错误显示在屏幕上
+    if command -v sing-box &> /dev/null; then
+        # [改进] 语法校验失败时输出具体错误，不再静默
         if ! sing-box check -c "$CONFIG_FILE"; then
-             echo -e "${RED}配置语法校验严重失败！${PLAIN}"
-             echo -e "${RED}请截图上方报错信息！${PLAIN}"
-             
-             # 2. 暂时注释掉回滚，这样你可以用 cat 查看 config.json 到底哪里错了
-             # [[ -f "${CONFIG_FILE}.bak" ]] && cp "${CONFIG_FILE}.bak" "$CONFIG_FILE"
+             echo -e "${RED}配置语法校验失败！正在回滚...${PLAIN}"
+             [[ -f "${CONFIG_FILE}.bak" ]] && cp "${CONFIG_FILE}.bak" "$CONFIG_FILE"
              return
         fi
     fi
@@ -105,7 +102,7 @@ restart_sb() {
     if systemctl is-active --quiet sing-box || pgrep -x "sing-box" >/dev/null; then
         echo -e "${GREEN}服务重启成功。${PLAIN}"
     else
-        echo -e "${RED}服务重启失败！${PLAIN}"
+        echo -e "${RED}服务重启失败！请检查日志。${PLAIN}"
     fi
 }
 
@@ -140,11 +137,10 @@ EOF
 write_warp_config() {
     local priv="$1" pub="$2" v4="$3" v6="$4" res="$5"
     
-    # [新增] 确保目录和基础文件存在，防止 jq 报错
+    # 确保基础配置文件存在
     if [[ ! -f "$CONFIG_FILE" ]]; then
         mkdir -p "$(dirname "$CONFIG_FILE")"
         echo "{}" > "$CONFIG_FILE"
-        echo -e "${YELLOW}已生成空配置文件: $CONFIG_FILE${PLAIN}"
     fi
 
     [[ ! "$v4" =~ "/" && -n "$v4" && "$v4" != "null" ]] && v4="${v4}/32"
@@ -156,17 +152,19 @@ write_warp_config() {
     
     check_env
 
-    # 1. 生成 Endpoint
+    # 1. 生成 Endpoint 
+    # [修正] Tag 直接命名为 WARP，作为路由目标
+    # [修正] 强制 ep_port 为数字类型，使用 address/port 字段 (1.10+ 标准)
     local endpoint_json=$(jq -n \
         --arg priv "$priv" \
         --arg pub "$pub" \
         --argjson addr "$addr_json" \
         --argjson res "$res" \
         --arg ep_addr "$FINAL_EP_ADDR" \
-        --argjson ep_port "$FINAL_EP_PORT" \
+        --argjson ep_port "${FINAL_EP_PORT:-2408}" \
         '{ 
             "type": "wireguard", 
-            "tag": "warp-endpoint", 
+            "tag": "WARP", 
             "system": false,
             "address": $addr, 
             "private_key": $priv,
@@ -181,35 +179,30 @@ write_warp_config() {
             ] 
         }')
 
-    # 2. 生成 Bridge Outbound
-    local outbound_json=$(jq -n '{ 
-        "type": "direct", 
-        "tag": "WARP", 
-        "detour": "warp-endpoint" 
-    }')
+    # [移除] 不再生成 Bridge Outbound (解决 1.12+ detour 报错)
 
-    echo -e "${YELLOW}正在应用 v3.6 Ultimate 架构配置...${PLAIN}"
+    echo -e "${YELLOW}正在应用 v3.7 Ultimate 架构配置...${PLAIN}"
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
     local TMP_CONF=$(mktemp)
     
-    # 初始化
-   # 确保 endpoints 和 outbounds 数组存在
+    # 初始化: 使用更稳健的写法，确保数组存在
     jq '.endpoints = (.endpoints // []) | .outbounds = (.outbounds // [])' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
 
-    # 清理旧配置
+    # 清理旧配置: 移除所有 WARP 相关的 outbound 和 endpoint
     jq 'del(.outbounds[] | select(.tag == "WARP" or .tag == "warp" or .type == "wireguard"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq 'del(.endpoints[] | select(.tag == "warp-endpoint" or .tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
 
-    # 注入
-    jq --argjson ep "$endpoint_json" '.endpoints += [$ep]' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
-    jq --argjson out "$outbound_json" '.outbounds += [$out]' "$CONFIG_FILE" > "$TMP_CONF"
+    # 注入 Endpoint
+    jq --argjson ep "$endpoint_json" '.endpoints += [$ep]' "$CONFIG_FILE" > "$TMP_CONF"
     
     if [[ $? -eq 0 && -s "$TMP_CONF" ]]; then
         mv "$TMP_CONF" "$CONFIG_FILE"
         echo -e "${GREEN}WARP 架构迁移与配置写入成功。${PLAIN}"
         restart_sb
     else
-        echo -e "${RED}写入失败。${PLAIN}"; rm "$TMP_CONF"
+        echo -e "${RED}写入失败，恢复备份...${PLAIN}"
+        cp "${CONFIG_FILE}.bak" "$CONFIG_FILE"
+        rm "$TMP_CONF"
     fi
 }
 
@@ -267,11 +260,16 @@ manual_warp() {
 }
 
 # ==========================================
-# 3. 路由策略 (修正顺序BUG)
+# 3. 路由策略 (适配 Endpoint 直连模式)
 # ==========================================
 
 ensure_warp_exists() {
-    jq -e '.outbounds[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1 && return 0
+    # 检查是否存在名为 WARP 的 endpoint 或 outbound
+    if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1 || \
+       jq -e '.outbounds[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
+       return 0
+    fi
+    
     if [[ -f "$CRED_FILE" ]]; then
         read -p "未发现配置但存在凭证，是否恢复？[y/n]: " r
         [[ "$r" == "y" ]] && { source "$CRED_FILE"; write_warp_config "$PRIV_KEY" "$PUB_KEY" "$V4_ADDR" "$V6_ADDR" "$RESERVED"; return 0; }
@@ -284,7 +282,7 @@ apply_routing_rule() {
     echo -e "${YELLOW}正在应用路由规则...${PLAIN}"
     local TMP_CONF=$(mktemp)
     
-    # 清空旧规则 (配置即最终态)
+    # 清空旧规则
     jq 'del(.route.rules[] | select(.outbound == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     
     # 前置插入 (Prepend)
@@ -297,18 +295,12 @@ apply_routing_rule() {
     fi
 }
 
-# [核心] 生成全能防环回规则 (Domain + IPv6 IP)
 get_anti_loop_rule() {
-    # 动态获取当前环境的 Endpoint IP (如果没跑 write_warp_config，则尝试重新检测)
     if [[ -z "$FINAL_EP_ADDR" ]]; then check_env >/dev/null; fi
-    
-    # 构造排除 IP 列表 (默认空)
     local ip_cidr="[]"
-    # 如果检测到是 IPv6 Endpoint (包含冒号)，则加入 IP 排除列表
     if [[ "$FINAL_EP_ADDR" == *":"* ]]; then
         ip_cidr="[\"${FINAL_EP_ADDR}/128\"]"
     fi
-    
     jq -n --argjson ip "$ip_cidr" '{ "domain": ["engage.cloudflareclient.com", "cloudflare.com"], "ip_cidr": $ip, "outbound": "direct" }'
 }
 
@@ -322,8 +314,6 @@ mode_global() {
     echo -e " a. 仅 IPv4  b. 仅 IPv6  c. 双栈全接管"
     read -p "选择模式: " sub
     
-    # [关键修正] 倒序应用：先应用 WARP 规则 (被压到底部)，再应用 Anti-loop (置顶)
-    
     local warp_rule=""
     case "$sub" in
         a) warp_rule=$(jq -n '{ "ip_version": 4, "outbound": "WARP" }') ;;
@@ -331,14 +321,9 @@ mode_global() {
         *) warp_rule=$(jq -n '{ "outbound": "WARP" }') ;;
     esac
     
-    # 1. 应用 WARP 全局规则 (此时在 Index 0)
     apply_routing_rule "$warp_rule"
-    
-    # 2. 应用防环回规则 (此时 Anti-Loop 插入 Index 0，WARP 被挤到 Index 1)
-    # 这样防环回优先级更高，防止握手流量死循环
     apply_routing_rule "$(get_anti_loop_rule)"
-    
-    echo -e "${GREEN}全局接管策略已应用 (防环回已置顶)。${PLAIN}"
+    echo -e "${GREEN}全局接管策略已应用。${PLAIN}"
 }
 
 mode_specific_node() {
@@ -357,9 +342,12 @@ mode_specific_node() {
 uninstall_warp() {
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak_un"
     local TMP_CONF=$(mktemp)
+    
+    # [修正] 清理名为 WARP 的 Outbound 和 Endpoint
     jq 'del(.outbounds[] | select(.tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
-    jq 'del(.endpoints[] | select(.tag == "warp-endpoint"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
+    jq 'del(.endpoints[] | select(.tag == "warp-endpoint" or .tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq 'del(.route.rules[] | select(.outbound == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
+    
     echo -e "${GREEN}WARP 卸载完成。${PLAIN}"; restart_sb
 }
 
@@ -373,9 +361,12 @@ show_menu() {
         clear
         local st="${RED}未配置${PLAIN}"
         if [[ -f "$CONFIG_FILE" ]]; then
-            jq -e '.outbounds[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1 && st="${GREEN}已配置 (v3.6 Ultimate)${PLAIN}"
+            # 检测 endpoint 是否存在
+            if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
+                st="${GREEN}已配置 (v3.7 Direct-EP)${PLAIN}"
+            fi
         fi
-        echo -e "================ Native WARP 管理中心 (Sing-box 1.10+) ================"
+        echo -e "================ Native WARP 管理中心 (Sing-box 1.12+) ================"
         echo -e " 当前配置状态: [$st]"
         echo -e "----------------------------------------------------"
         echo -e " 1. 配置 WARP 凭证 (自动/手动)"
@@ -400,7 +391,7 @@ show_menu() {
 }
 
 auto_main() {
-    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署 (v3.6)...${PLAIN}"
+    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署 (v3.7)...${PLAIN}"
     check_dependencies
     if [[ -n "$WARP_PRIV_KEY" ]] && [[ -n "$WARP_IPV6" ]]; then
         save_credentials "$WARP_PRIV_KEY" "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=" "172.16.0.2/32" "$WARP_IPV6" "${WARP_RESERVED:-[0,0,0]}"
@@ -418,12 +409,9 @@ auto_main() {
         *) rule=$(jq -n '{ "domain_suffix": ["netflix.com","openai.com","google.com","youtube.com"], "outbound": "WARP" }') ;;
     esac
     
-    # [关键修复] 倒序应用：先应用策略规则，再应用防环回规则
     if [[ -n "$rule" ]]; then
         apply_routing_rule "$rule"
     fi
-    
-    # 防环回最后应用 (Prepend 后会在最顶端)
     apply_routing_rule "$(get_anti_loop_rule)"
     
     echo -e "${GREEN}>>> [WARP-SB] 自动化配置完成。${PLAIN}"
