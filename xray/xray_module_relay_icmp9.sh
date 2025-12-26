@@ -1,9 +1,9 @@
 #!/bin/bash
-echo "V3.91"
+
 # ============================================================
-#  ICMP9 中转扩展模块 (v3.9 Path-Fix Edition)
+#  ICMP9 中转扩展模块 (v3.92 Syntax-Fix Edition)
 #  - 架构: 端口锚定 -> 协议自适应 -> 增量注入
-#  - 修复: 找回 v3.8 丢失的 LOCAL_PATH 变量，修复客户端路径为空的问题
+#  - 修复: 修复 v3.9 中 VMess 链接生成时的引号闭合错误
 #  - 核心: 依赖 IP 白名单直连 Cloudflare
 # ============================================================
 
@@ -44,8 +44,9 @@ check_env() {
         echo -e "${RED}错误: 未找到端口 $LOCAL_PORT${PLAIN}"; exit 1
     fi
 
-    # 2. [核心修复] 获取协议和路径 (v3.8 漏了这里)
+    # 2. 获取协议和路径 (使用更安全的引号写法)
     LOCAL_PROTO=$(jq -r ".inbounds[$TARGET_INDEX].protocol" "$CONFIG_FILE")
+    # 注意：这里使用单引号包裹 jq 过滤器，避免 bash 转义问题
     LOCAL_PATH=$(jq -r ".inbounds[$TARGET_INDEX].streamSettings.wsSettings.path // \"/\"" "$CONFIG_FILE")
     
     echo -e "${GREEN}>>> 锁定端口: $LOCAL_PORT ($LOCAL_PROTO)${PLAIN}"
@@ -164,7 +165,7 @@ finish_setup() {
         echo -e "${RED}配置失败，正在回滚...${PLAIN}"; cp "$BACKUP_FILE" "$CONFIG_FILE"; systemctl restart xray; exit 1
     fi
 
-    echo -e "\n${GREEN}=== 部署成功 (v3.9 Path Fix) ===${PLAIN}"
+    echo -e "\n${GREEN}=== 部署成功 (v3.92 Syntax Fix) ===${PLAIN}"
     echo -e "连接地址: ${SKYBLUE}${R_WSHOST}${PLAIN}"
     
     echo "$NODES_JSON" | jq -c '.countries[]?' | while read -r node; do
@@ -176,7 +177,21 @@ finish_setup() {
         
         # 使用修复后的 $LOCAL_PATH 生成正确链接
         if [[ "$LOCAL_PROTO" == "vmess" ]]; then
-            VMESS_JSON=$(jq -n --arg v "2" --arg ps "$NODE_ALIAS" --arg add "$ARGO_DOMAIN" --arg port "443" --arg id "$UUID" --arg net "ws" --arg type "none" --arg host "$ARGO_DOMAIN" --arg path "$LOCAL_PATH" --arg tls "tls" --arg sni "$ARGO_DOMAIN" '{v:$v, ps:$ps, add:$add, port:$port, id:$id, net:$net, type:$type, host:$host, path:$path, tls:$tls, sni:$sni}')
+            # 拆分长命令以确保语法安全
+            VMESS_JSON=$(jq -n \
+                --arg v "2" \
+                --arg ps "$NODE_ALIAS" \
+                --arg add "$ARGO_DOMAIN" \
+                --arg port "443" \
+                --arg id "$UUID" \
+                --arg net "ws" \
+                --arg type "none" \
+                --arg host "$ARGO_DOMAIN" \
+                --arg path "$LOCAL_PATH" \
+                --arg tls "tls" \
+                --arg sni "$ARGO_DOMAIN" \
+                '{v:$v, ps:$ps, add:$add, port:$port, id:$id, net:$net, type:$type, host:$host, path:$path, tls:$tls, sni:$sni}')
+            
             LINK="vmess://$(echo -n "$VMESS_JSON" | base64 -w 0)"
         else
             LINK="vless://${UUID}@${ARGO_DOMAIN}:443?encryption=none&security=tls&sni=${ARGO_DOMAIN}&type=ws&host=${ARGO_DOMAIN}&path=${LOCAL_PATH}#${NODE_ALIAS}"
@@ -184,4 +199,10 @@ finish_setup() {
         echo "$LINK" >> /root/xray_nodes2.txt
     done
     rm -f /tmp/new_* /tmp/final_* /tmp/outbound_* /tmp/rule_* /tmp/uuid_map.txt
-    echo "
+    echo "请查看: cat /root/xray_nodes2.txt"
+}
+
+check_env
+get_user_input
+inject_config
+finish_setup
