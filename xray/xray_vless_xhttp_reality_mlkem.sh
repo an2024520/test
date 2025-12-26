@@ -94,28 +94,32 @@ else
     esac
 fi
 
-# 4. 生成密钥 (关键修正)
+# 4. 生成密钥 (抗噪修正版)
 echo -e "${YELLOW}正在生成密钥...${PLAIN}"
 
 UUID=$($XRAY_BIN uuid)
 SHORT_ID=$(openssl rand -hex 4)
 XHTTP_PATH="/$(openssl rand -hex 6)"
 
-# [关键修正1] Reality 依然使用标准的 X25519
+# [Reality] 标准 X25519
 RAW_REALITY=$($XRAY_BIN x25519)
 PRIVATE_KEY=$(echo "$RAW_REALITY" | grep "Private" | awk -F ": " '{print $2}' | tr -d ' \r\n')
 PUBLIC_KEY=$(echo "$RAW_REALITY" | grep "Public" | awk -F ": " '{print $2}' | tr -d ' \r\n')
 
-# [关键修正2] 生成 VLESS ENC 密钥 (模仿 argosbx.sh 逻辑)
-# vlessenc 输出示例: {"decryption":"...","encryption":"..."}
+# [VLESS ENC] 使用 grep/awk 提取，避免 logs 干扰 jq
+# vlessenc 输出示例可能包含日志，但 JSON 部分为: "decryption": "...",
 RAW_ENC=$($XRAY_BIN vlessenc)
-# 提取 decryption (用于服务端配置文件)
-SERVER_DECRYPTION=$(echo "$RAW_ENC" | jq -r '.decryption')
-# 提取 encryption (用于客户端分享链接)
-CLIENT_ENCRYPTION=$(echo "$RAW_ENC" | jq -r '.encryption')
+
+# 提取 decryption (用于服务端) - 查找包含 decryption 的行，提取冒号后的内容，去引号
+SERVER_DECRYPTION=$(echo "$RAW_ENC" | grep '"decryption":' | head -n1 | awk -F '"' '{print $4}')
+
+# 提取 encryption (用于客户端)
+CLIENT_ENCRYPTION=$(echo "$RAW_ENC" | grep '"encryption":' | head -n1 | awk -F '"' '{print $4}')
 
 if [[ -z "$SERVER_DECRYPTION" ]] || [[ -z "$CLIENT_ENCRYPTION" ]]; then
     echo -e "${RED}错误: 无法生成 VLESS ENC 密钥！${PLAIN}"
+    echo -e "${RED}调试信息 - 原始输出:${PLAIN}"
+    echo "$RAW_ENC"
     exit 1
 fi
 
@@ -178,7 +182,7 @@ sleep 2
 
 if systemctl is-active --quiet xray; then
     PUBLIC_IP=$(curl -s4 ifconfig.me)
-    # [关键修正3] 分享链接中 encryption 参数填入 CLIENT_ENCRYPTION
+    # 分享链接中 encryption 参数填入 CLIENT_ENCRYPTION
     SHARE_LINK="vless://${UUID}@${PUBLIC_IP}:${PORT}?security=reality&encryption=${CLIENT_ENCRYPTION}&pbk=${PUBLIC_KEY}&headerType=none&type=xhttp&sni=${SNI}&sid=${SHORT_ID}&path=${XHTTP_PATH}&fp=chrome#${NODE_TAG}"
 
     echo -e ""
