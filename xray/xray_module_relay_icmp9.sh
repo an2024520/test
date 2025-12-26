@@ -1,11 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  ICMP9 中转扩展模块 (v3.4 Official-Logic-Sync)
+#  ICMP9 中转扩展模块 (v3.6 UA-Fix Edition)
 #  - 架构: 端口锚定 -> 协议自适应 -> 增量注入
-#  - 修复: 回归官方脚本连接逻辑，直接连接 wshost (CF域名)
-#  - 特性: 自动适配纯 IPv6 环境，无需手动输入 IP
-#  - 解决: 解决 v3.2 的 403 错误和 v3.3 的 IPv4 无法连接问题
+#  - 逻辑: 只有 Cloudflare (wshost) 才有 IPv6，必须连它
+#  - 修复: 添加 Chrome User-Agent 伪装，突破 403 封锁
 # ============================================================
 
 RED='\033[0;31m'
@@ -22,105 +21,61 @@ API_NODES="https://api.icmp9.com/online.php"
 [[ $EUID -ne 0 ]] && echo -e "${RED}错误: 必须使用 root 用户运行此脚本！${PLAIN}" && exit 1
 
 # ============================================================
-# 0. 基础依赖检查
-# ============================================================
-check_dependencies() {
-    if ! command -v jq &> /dev/null; then apt-get install -y jq || yum install -y jq; fi
-}
-
-# ============================================================
-# 1. 端口锚定与环境检测
+# 1. 环境检测
 # ============================================================
 check_env() {
-    check_dependencies
-    echo -e "${YELLOW}>>> [自检] 正在扫描本地节点...${PLAIN}"
+    if ! command -v jq &> /dev/null; then apt-get install -y jq; fi
     
+    echo -e "${YELLOW}>>> [自检] 正在扫描本地节点...${PLAIN}"
     if [[ ! -f "$CONFIG_FILE" ]]; then
-        echo -e "${RED}错误: 未找到 Xray 配置文件 ($CONFIG_FILE)${PLAIN}"; exit 1
+        echo -e "${RED}错误: 未找到 Xray 配置文件${PLAIN}"; exit 1
     fi
 
-    # --- IPv6 环境检测 ---
-    if ! curl -4 -s -m 2 http://ip.sb >/dev/null; then
-        echo -e "${SKYBLUE}>>> 检测到纯 IPv6 环境 (无 IPv4)${PLAIN}"
-    else
-        echo -e "${GREEN}>>> 检测到 IPv4/双栈环境${PLAIN}"
-    fi
-
-    # --- A. 获取目标端口 ---
+    # 自动获取端口
     if [[ "$AUTO_SETUP" == "true" ]] && [[ -n "$ICMP9_PORT" ]]; then
         LOCAL_PORT="$ICMP9_PORT"
-        echo -e "${GREEN}>>> [自动模式] 锁定端口: ${SKYBLUE}$LOCAL_PORT${PLAIN}"
     else
-        echo -e "${SKYBLUE}请指定需要衔接 ICMP9 的本地节点端口 (Tunnel Port):${PLAIN}"
-        while true; do
-            read -p "请输入端口 (默认 8080): " input_port
-            LOCAL_PORT=${input_port:-8080}
-            if [[ "$LOCAL_PORT" =~ ^[0-9]+$ ]] && [ "$LOCAL_PORT" -le 65535 ]; then
-                break
-            else
-                echo -e "${RED}无效端口，请重新输入。${PLAIN}"
-            fi
-        done
+        read -p "请输入端口 (默认 8080): " input_port
+        LOCAL_PORT=${input_port:-8080}
     fi
 
-    # --- B. 精准锚定节点 ---
-    TARGET_INDEX=$(jq -r --argjson p "$LOCAL_PORT" '
-        .inbounds | to_entries | 
-        map(select(.value.port == $p)) | 
-        .[0].key
-    ' "$CONFIG_FILE")
-
-    if [[ "$TARGET_INDEX" == "null" || -z "$TARGET_INDEX" ]]; then
-        echo -e "${RED}错误: 未找到监听端口为 $LOCAL_PORT 的节点！${PLAIN}"
-        exit 1
+    # 锚定节点
+    TARGET_INDEX=$(jq -r --argjson p "$LOCAL_PORT" '.inbounds | to_entries | map(select(.value.port == $p)) | .[0].key' "$CONFIG_FILE")
+    if [[ -z "$TARGET_INDEX" || "$TARGET_INDEX" == "null" ]]; then
+        echo -e "${RED}错误: 未找到端口 $LOCAL_PORT${PLAIN}"; exit 1
     fi
 
     LOCAL_PROTO=$(jq -r ".inbounds[$TARGET_INDEX].protocol" "$CONFIG_FILE")
     LOCAL_PATH=$(jq -r ".inbounds[$TARGET_INDEX].streamSettings.wsSettings.path // \"/\"" "$CONFIG_FILE")
-    echo -e "${GREEN}>>> 节点锁定成功: [${LOCAL_PROTO^^}] Path: ${LOCAL_PATH}${PLAIN}"
+    echo -e "${GREEN}>>> 锁定端口: $LOCAL_PORT ($LOCAL_PROTO)${PLAIN}"
 }
 
 get_user_input() {
-    if [[ "$AUTO_SETUP" == "true" ]] && [[ -n "$ICMP9_KEY" ]]; then
-        REMOTE_UUID="$ICMP9_KEY"
+    if [[ "$AUTO_SETUP" != "true" ]]; then
+        read -p "请输入 ICMP9 KEY: " REMOTE_UUID
+        read -p "请输入 Argo 域名: " ARGO_DOMAIN
     else
-        echo -e "----------------------------------------------------"
-        while true; do
-            read -p "请输入 ICMP9 授权 KEY (UUID): " REMOTE_UUID
-            if [[ -n "$REMOTE_UUID" ]]; then break; fi
-        done
+        REMOTE_UUID="$ICMP9_KEY"
     fi
-    
-    if [[ -z "$ARGO_DOMAIN" ]]; then
-         read -p "请输入 Argo 隧道域名 (用于生成链接): " ARGO_DOMAIN
-    fi
+    [[ -z "$REMOTE_UUID" || -z "$ARGO_DOMAIN" ]] && exit 1
 }
 
 # ============================================================
-# 2. 核心注入逻辑 (官方逻辑复刻版 v3.4)
+# 2. 注入配置 (User-Agent 伪装核心)
 # ============================================================
 inject_config() {
-    echo -e "${YELLOW}>>> [配置] 获取节点数据...${PLAIN}"
+    echo -e "${YELLOW}>>> [配置] 正在生成抗封锁配置...${PLAIN}"
     
-    if [[ "$LOCAL_PROTO" == "vmess" ]]; then USER_FIELD="users"; else USER_FIELD="clients"; fi
-
     NODES_JSON=$(curl -s "$API_NODES")
-    if ! echo "$NODES_JSON" | jq -e . >/dev/null 2>&1; then
-         echo -e "${RED}错误: API 请求失败。${PLAIN}"; exit 1
-    fi
-    
     RAW_CFG=$(curl -s "$API_CONFIG")
-    # 解析配置
+    
+    # 关键：提取 wshost (CF域名)
     R_WSHOST=$(echo "$RAW_CFG" | grep "^wshost|" | cut -d'|' -f2 | tr -d '\r\n')
     R_PORT=$(echo "$RAW_CFG" | grep "^port|" | cut -d'|' -f2 | tr -d '\r\n')
     R_TLS="none"; [[ $(echo "$RAW_CFG" | grep "^tls|" | cut -d'|' -f2) == "1" ]] && R_TLS="tls"
 
-    # [核心回归] 直接使用 API 提供的 wshost (域名) 作为连接地址
-    # 只要是 Cloudflare 域名，在纯 IPv6 VPS 上会自动解析为 IPv6 地址
-    FINAL_CONNECT_ADDR="$R_WSHOST"
-    
-    echo -e "${GREEN}>>> 远程连接地址已获取: ${SKYBLUE}$FINAL_CONNECT_ADDR${PLAIN}"
-    echo -e "${GRAY}    (此域名通常支持双栈，系统将自动使用 IPv6 连接)${PLAIN}"
+    # 核心逻辑：地址和伪装都用 wshost (利用 CF 的 IPv6 能力)
+    FINAL_ADDR="$R_WSHOST"
 
     cp "$CONFIG_FILE" "$BACKUP_FILE"
 
@@ -130,6 +85,7 @@ inject_config() {
       .routing.rules |= map(select(.outboundTag | startswith("icmp9-") | not))
     ' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
 
+    if [[ "$LOCAL_PROTO" == "vmess" ]]; then USER_FIELD="users"; else USER_FIELD="clients"; fi
     EXISTING_USERS=$(jq -c ".inbounds[$TARGET_INDEX].settings.${USER_FIELD}[0:1]" "$CONFIG_FILE")
     
     echo "[]" > /tmp/new_outbounds.json
@@ -139,101 +95,87 @@ inject_config() {
     echo "$NODES_JSON" | jq -c '.countries[]?' | while read -r node; do
         CODE=$(echo "$node" | jq -r '.code')
         NEW_UUID=$(/usr/local/bin/xray_core/xray uuid)
-        USER_EMAIL="icmp9-${CODE}"
-        TAG_OUT="icmp9-out-${CODE}"
-        PATH_OUT="/${CODE}"
-
-        jq --arg uuid "$NEW_UUID" --arg email "$USER_EMAIL" \
-           '. + [{"id": $uuid, "email": $email}]' \
+        
+        # 用户
+        jq --arg uuid "$NEW_UUID" --arg email "icmp9-${CODE}" '. + [{"id": $uuid, "email": $email}]' \
            /tmp/new_users.json > /tmp/new_users.json.tmp && mv /tmp/new_users.json.tmp /tmp/new_users.json
 
-        # [生成出站]
-        # 移除 sockopt: domainStrategy: UseIPv6，完全复刻官方脚本行为，依赖系统 DNS
+        # 出站 (Outbound) - 加入 User-Agent 伪装
         jq -n \
-           --arg tag "$TAG_OUT" \
-           --arg conn_addr "$FINAL_CONNECT_ADDR" \
-           --arg sni_host "$R_WSHOST" \
+           --arg tag "icmp9-out-${CODE}" \
+           --arg addr "$FINAL_ADDR" \
+           --arg sni "$R_WSHOST" \
            --arg port "$R_PORT" \
            --arg uuid "$REMOTE_UUID" \
            --arg tls "$R_TLS" \
-           --arg path "$PATH_OUT" \
+           --arg path "/${CODE}" \
            '{
               "tag": $tag, "protocol": "vmess",
-              "settings": { "vnext": [{"address": $conn_addr, "port": ($port | tonumber), "users": [{"id": $uuid}]}] },
+              "settings": { "vnext": [{"address": $addr, "port": ($port | tonumber), "users": [{"id": $uuid, "alterId": 0, "security": "auto"}]}] },
               "streamSettings": { 
                   "network": "ws", 
                   "security": $tls, 
-                  "tlsSettings": (if $tls == "tls" then {"serverName": $sni_host} else null end),
-                  "wsSettings": { "path": $path, "headers": {"Host": $sni_host} }
+                  "tlsSettings": (if $tls == "tls" then {"serverName": $sni, "allowInsecure": false} else null end),
+                  "wsSettings": { 
+                      "path": $path, 
+                      "headers": {
+                          "Host": $sni,
+                          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                      } 
+                  }
               }
            }' >> /tmp/outbound_block.json
 
-        jq -n \
-           --arg email "$USER_EMAIL" \
-           --arg outTag "$TAG_OUT" \
+        # 路由
+        jq -n --arg email "icmp9-${CODE}" --arg outTag "icmp9-out-${CODE}" \
            '{ "type": "field", "user": [$email], "outboundTag": $outTag }' >> /tmp/rule_block.json
            
         echo "${CODE}|${NEW_UUID}" >> /tmp/uuid_map.txt
     done
 
+    # 合并
     jq -s '.' /tmp/outbound_block.json > /tmp/final_outbounds.json
     jq -s '.' /tmp/rule_block.json > /tmp/final_rules.json
     
-    jq --slurpfile new_list /tmp/new_users.json \
-       --argjson idx "$TARGET_INDEX" \
-       --arg field "$USER_FIELD" \
-       '.inbounds[$idx].settings[$field] = $new_list[0]' \
-       "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+    jq --slurpfile new_list /tmp/new_users.json --argjson idx "$TARGET_INDEX" --arg field "$USER_FIELD" \
+       '.inbounds[$idx].settings[$field] = $new_list[0]' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
 
     jq --slurpfile new_outs /tmp/final_outbounds.json '.outbounds += $new_outs[0]' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
     
     jq --slurpfile new_rules /tmp/final_rules.json '.routing.rules = ($new_rules[0] + .routing.rules)' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
-
-    rm -f /tmp/new_users.json /tmp/outbound_block.json /tmp/rule_block.json /tmp/final_*.json /tmp/new_users.json.tmp
 }
 
 # ============================================================
-# 3. 验证与输出
+# 3. 收尾
 # ============================================================
 finish_setup() {
     > /root/xray_nodes2.txt
-    ARGO_DOMAIN=$(echo "$ARGO_DOMAIN" | tr -d '\r\n ')
-    echo -e "${YELLOW}>>> [重启] 应用配置...${PLAIN}"
     systemctl restart xray
     sleep 2
     if ! systemctl is-active --quiet xray; then
-        echo -e "${RED}失败: Xray 崩溃，正在回滚...${PLAIN}"; cp "$BACKUP_FILE" "$CONFIG_FILE"; systemctl restart xray; exit 1
+        echo -e "${RED}配置失败，正在回滚...${PLAIN}"; cp "$BACKUP_FILE" "$CONFIG_FILE"; systemctl restart xray; exit 1
     fi
 
-    echo -e "\n${GREEN}======================================================${PLAIN}"
-    echo -e "${GREEN}   ICMP9 中转部署成功 (v3.4 Official Logic)           ${PLAIN}"
-    echo -e "${GREEN}======================================================${PLAIN}"
-    echo -e "远程连接地址: ${SKYBLUE}${FINAL_CONNECT_ADDR}${PLAIN}"
-    echo -e "SNI 伪装域名: ${YELLOW}${R_WSHOST}${PLAIN}"
-    echo -e "------------------------------------------------------"
-
+    echo -e "\n${GREEN}=== 部署成功 (v3.6 UA抗封锁版) ===${PLAIN}"
+    echo -e "连接地址: ${SKYBLUE}${R_WSHOST}${PLAIN} (IPv6)"
+    
     echo "$NODES_JSON" | jq -c '.countries[]?' | while read -r node; do
         CODE=$(echo "$node" | jq -r '.code')
         NAME=$(echo "$node" | jq -r '.name')
         EMOJI=$(echo "$node" | jq -r '.emoji')
-        
         UUID=$(grep "^${CODE}|" /tmp/uuid_map.txt | cut -d'|' -f2)
         NODE_ALIAS="${EMOJI} ${NAME} [中转]"
         
         if [[ "$LOCAL_PROTO" == "vmess" ]]; then
-            VMESS_JSON=$(jq -n \
-                --arg v "2" --arg ps "$NODE_ALIAS" --arg add "$ARGO_DOMAIN" --arg port "443" --arg id "$UUID" \
-                --arg scy "auto" --arg net "ws" --arg type "none" --arg host "$ARGO_DOMAIN" --arg path "$LOCAL_PATH" --arg tls "tls" --arg sni "$ARGO_DOMAIN" \
-                '{v:$v, ps:$ps, add:$add, port:$port, id:$id, aid:"0", scy:$scy, net:$net, type:$type, host:$host, path:$path, tls:$tls, sni:$sni}')
+            VMESS_JSON=$(jq -n --arg v "2" --arg ps "$NODE_ALIAS" --arg add "$ARGO_DOMAIN" --arg port "443" --arg id "$UUID" --arg net "ws" --arg type "none" --arg host "$ARGO_DOMAIN" --arg path "$LOCAL_PATH" --arg tls "tls" --arg sni "$ARGO_DOMAIN" '{v:$v, ps:$ps, add:$add, port:$port, id:$id, net:$net, type:$type, host:$host, path:$path, tls:$tls, sni:$sni}')
             LINK="vmess://$(echo -n "$VMESS_JSON" | base64 -w 0)"
         else
             LINK="vless://${UUID}@${ARGO_DOMAIN}:443?encryption=none&security=tls&sni=${ARGO_DOMAIN}&type=ws&host=${ARGO_DOMAIN}&path=${LOCAL_PATH}#${NODE_ALIAS}"
         fi
         echo "$LINK" >> /root/xray_nodes2.txt
     done
+    rm -f /tmp/new_* /tmp/final_* /tmp/outbound_* /tmp/rule_* /tmp/uuid_map.txt
     echo "请查看: cat /root/xray_nodes2.txt"
-    rm -f /tmp/uuid_map.txt
-    echo -e "------------------------------------------------------"
 }
 
 check_env
