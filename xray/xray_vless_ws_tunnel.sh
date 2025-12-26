@@ -2,8 +2,8 @@
 
 # ============================================================
 #  模块九：VLESS + WS (Tunnel 专用版 / 无需证书)
-#  - 版本: v1.2 (Fix-Crash & Auto-Adapter)
-#  - 修复: 增加 Tag + Port 双重清理逻辑，防止核心崩溃
+#  - 版本: v1.3 (Force-Save Edition)
+#  - 修复: 无论手动还是自动模式，强制保存节点信息到文件
 #  - 适配: 完美支持 auto_deploy.sh 自动化部署
 # ============================================================
 
@@ -17,6 +17,7 @@ PLAIN='\033[0m'
 # 核心路径
 CONFIG_FILE="/usr/local/etc/xray/config.json"
 XRAY_BIN="/usr/local/bin/xray_core/xray"
+LOG_FILE="/root/xray_nodes.txt"
 
 echo -e "${GREEN}>>> [模块九] 智能添加节点: VLESS + WebSocket (Tunnel专用)...${PLAIN}"
 
@@ -61,9 +62,7 @@ fi
 if [[ "$AUTO_SETUP" == "true" ]]; then
     # >>> 自动模式 >>>
     echo -e "${GREEN}>>> [自动模式] 正在读取参数...${PLAIN}"
-    # 优先读取 Xray 专用变量，若无则读取通用变量，最后默认 8080
     PORT=${XRAY_WS_PORT:-${PORT:-8080}}
-    # 路径优先读取 Xray 专用，若无则尝试读取 Sing-box 变量(保持兼容)，最后默认 /ws
     WS_PATH=${XRAY_WS_PATH:-${SB_WS_PATH:-"/ws"}}
     DOMAIN=${ARGO_DOMAIN}
     
@@ -100,15 +99,14 @@ NODE_TAG="vless-ws-tunnel-${PORT}"
 
 echo -e "${YELLOW}正在更新 Xray 配置...${PLAIN}"
 
-# [关键修复] 双重清理：删除占用同端口(.port) 或 同Tag(.tag) 的旧配置
-# 注意：Xray 配置文件中使用 "port" 字段，Sing-box 使用 "listen_port"
+# 双重清理：删除占用同端口(.port) 或 同Tag(.tag) 的旧配置
 tmp_clean=$(mktemp)
 jq --argjson p "$PORT" --arg tag "$NODE_TAG" \
    'del(.inbounds[]? | select(.port == $p or .tag == $tag))' \
    "$CONFIG_FILE" > "$tmp_clean" && mv "$tmp_clean" "$CONFIG_FILE"
 
 # 构建节点 JSON
-# 强制监听 127.0.0.1，Security=none
+# 强制监听 :: 以兼容 IPv4/IPv6 双栈
 NODE_JSON=$(jq -n \
     --arg port "$PORT" \
     --arg tag "$NODE_TAG" \
@@ -116,7 +114,7 @@ NODE_JSON=$(jq -n \
     --arg path "$WS_PATH" \
     '{
       tag: $tag,
-      listen: "127.0.0.1",
+      listen: "::",
       port: ($port | tonumber),
       protocol: "vless",
       settings: {
@@ -143,7 +141,7 @@ jq --argjson new_node "$NODE_JSON" '.inbounds += [$new_node]' "$CONFIG_FILE" > "
 systemctl restart xray
 sleep 2
 
-# --- 6. 输出反馈 ---
+# --- 6. 输出反馈与保存 ---
 if systemctl is-active --quiet xray; then
     NODE_NAME="Xray-Tunnel-${PORT}"
     # 链接生成：前端 443 TLS -> Tunnel -> 本地 8080
@@ -154,7 +152,7 @@ if systemctl is-active --quiet xray; then
     echo -e "${GREEN}    [Xray-Tunnel] 节点部署成功！        ${PLAIN}"
     echo -e "${GREEN}========================================${PLAIN}"
     echo -e "节点 Tag    : ${YELLOW}${NODE_TAG}${PLAIN}"
-    echo -e "本地监听    : ${YELLOW}127.0.0.1:${PORT}${PLAIN}"
+    echo -e "本地监听    : ${YELLOW}:: (IPv4/IPv6 Dual Stack) :${PORT}${PLAIN}"
     echo -e "WS 路径     : ${YELLOW}${WS_PATH}${PLAIN}"
     echo -e "绑定域名    : ${YELLOW}${DOMAIN}${PLAIN}"
     echo -e "----------------------------------------"
@@ -162,12 +160,13 @@ if systemctl is-active --quiet xray; then
     echo -e "${YELLOW}${SHARE_LINK}${PLAIN}"
     echo -e "----------------------------------------"
     
-    # 自动模式记录日志
-    if [[ "$AUTO_SETUP" == "true" ]]; then
-        LOG_FILE="/root/xray_nodes.txt"
-        echo "Tag: ${NODE_TAG} | Link: ${SHARE_LINK}" >> "$LOG_FILE"
-        echo -e "${SKYBLUE}>>> [自动记录] 节点信息已追加至: ${LOG_FILE}${PLAIN}"
-    fi
+    # [核心修复] 无论何种模式，强制保存到文件
+    echo "Tag: ${NODE_TAG} | Time: $(date)" >> "$LOG_FILE"
+    echo "Link: ${SHARE_LINK}" >> "$LOG_FILE"
+    echo "--------------------------------------------------" >> "$LOG_FILE"
+    
+    echo -e "${SKYBLUE}>>> 节点信息已保存至: ${LOG_FILE}${PLAIN}"
+    echo -e "${SKYBLUE}>>> 您随时可以使用 'cat ${LOG_FILE}' 查看链接${PLAIN}"
 else
     echo -e "${RED}启动失败！请检查日志: journalctl -u xray -e${PLAIN}"
     [[ "$AUTO_SETUP" == "true" ]] && exit 1
