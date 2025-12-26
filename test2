@@ -13,3 +13,5 @@ grep "ClientAlive" /etc/ssh/sshd_config
 #让屏幕每隔几秒就有字符输出，欺骗中间代理认为连接一直活跃。
 # 每 20 秒打印一个空格（或日期），防止断开
 while true; do date; sleep 20; done
+
+test
