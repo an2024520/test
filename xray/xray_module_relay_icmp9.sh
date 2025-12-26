@@ -1,10 +1,11 @@
 #!/bin/bash
 
 # ============================================================
-#  ICMP9 中转扩展模块 (v3.3 IPv6-Host-Fix)
+#  ICMP9 中转扩展模块 (v3.4 Official-Logic-Sync)
 #  - 架构: 端口锚定 -> 协议自适应 -> 增量注入
-#  - 修复: 修正 v3.2 误用 wshost 作为连接地址导致 403 的 BUG
-#  - 逻辑: 优先连接 API 指定的 host，若无 IPv6 则手动介入
+#  - 修复: 回归官方脚本连接逻辑，直接连接 wshost (CF域名)
+#  - 特性: 自动适配纯 IPv6 环境，无需手动输入 IP
+#  - 解决: 解决 v3.2 的 403 错误和 v3.3 的 IPv4 无法连接问题
 # ============================================================
 
 RED='\033[0;31m'
@@ -12,7 +13,6 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 SKYBLUE='\033[0;36m'
 PLAIN='\033[0m'
-GRAY='\033[0;37m'
 
 CONFIG_FILE="/usr/local/etc/xray/config.json"
 BACKUP_FILE="/usr/local/etc/xray/config.json.bak"
@@ -26,8 +26,6 @@ API_NODES="https://api.icmp9.com/online.php"
 # ============================================================
 check_dependencies() {
     if ! command -v jq &> /dev/null; then apt-get install -y jq || yum install -y jq; fi
-    # 需要 dnsutils 来使用 dig 命令进行解析检测
-    if ! command -v dig &> /dev/null; then apt-get install -y dnsutils || yum install -y bind-utils; fi
 }
 
 # ============================================================
@@ -42,9 +40,7 @@ check_env() {
     fi
 
     # --- IPv6 环境检测 ---
-    IS_IPV6_ONLY=false
     if ! curl -4 -s -m 2 http://ip.sb >/dev/null; then
-        IS_IPV6_ONLY=true
         echo -e "${SKYBLUE}>>> 检测到纯 IPv6 环境 (无 IPv4)${PLAIN}"
     else
         echo -e "${GREEN}>>> 检测到 IPv4/双栈环境${PLAIN}"
@@ -101,7 +97,7 @@ get_user_input() {
 }
 
 # ============================================================
-# 2. 核心注入逻辑 (地址分离修复版 v3.3)
+# 2. 核心注入逻辑 (官方逻辑复刻版 v3.4)
 # ============================================================
 inject_config() {
     echo -e "${YELLOW}>>> [配置] 获取节点数据...${PLAIN}"
@@ -114,58 +110,17 @@ inject_config() {
     fi
     
     RAW_CFG=$(curl -s "$API_CONFIG")
-    # [修正] 这里正确读取 host 作为连接地址，wshost 作为伪装域名
-    R_HOST=$(echo "$RAW_CFG" | grep "^host|" | cut -d'|' -f2 | tr -d '\r\n')
+    # 解析配置
     R_WSHOST=$(echo "$RAW_CFG" | grep "^wshost|" | cut -d'|' -f2 | tr -d '\r\n')
     R_PORT=$(echo "$RAW_CFG" | grep "^port|" | cut -d'|' -f2 | tr -d '\r\n')
     R_TLS="none"; [[ $(echo "$RAW_CFG" | grep "^tls|" | cut -d'|' -f2) == "1" ]] && R_TLS="tls"
 
-    # ========================================================
-    # [核心修复] 远程地址 IPv6 适配检查
-    # ========================================================
-    # 默认连接地址为 API 提供的 host (例如 www.csgo.com 或某个 IP)
-    FINAL_CONNECT_ADDR="$R_HOST"
+    # [核心回归] 直接使用 API 提供的 wshost (域名) 作为连接地址
+    # 只要是 Cloudflare 域名，在纯 IPv6 VPS 上会自动解析为 IPv6 地址
+    FINAL_CONNECT_ADDR="$R_WSHOST"
     
-    if [[ "$IS_IPV6_ONLY" == "true" ]]; then
-        echo -e "${YELLOW}>>> 正在检测远程连接地址 ($R_HOST) 的 IPv6 连通性...${PLAIN}"
-        
-        # 尝试解析 AAAA 记录
-        AAAA_RECORD=""
-        if [[ "$R_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-             # 如果 host 直接是 IPv4 IP，肯定没有 AAAA
-             AAAA_RECORD=""
-        else
-             AAAA_RECORD=$(dig AAAA +short "$R_HOST" | head -n 1)
-        fi
-        
-        if [[ -n "$AAAA_RECORD" ]]; then
-            echo -e "${GREEN}>>> 成功解析到 IPv6 地址: $AAAA_RECORD${PLAIN}"
-            # 使用域名，让 Xray 通过 UseIPv6 策略自动连接解析到的 IPv6
-        else
-            echo -e "${RED}警告: 纯 IPv6 环境下，远程地址 $R_HOST 不支持 IPv6 或解析失败！${PLAIN}"
-            echo -e "${RED}      直接连接会导致 'Network is unreachable'。${PLAIN}"
-            echo -e "${SKYBLUE}>>> 解决方案: 请手动输入远程节点的 IPv6 地址。${PLAIN}"
-            echo -e "${GRAY}    (您需要填入您在白名单放行时获取的那个远程节点 IPv6)${PLAIN}"
-            
-            while true; do
-                read -p "请输入远程 IPv6 地址: " MANUAL_IPV6
-                if [[ -n "$MANUAL_IPV6" ]]; then
-                    # 简单验证 IPv6 格式
-                    if [[ "$MANUAL_IPV6" =~ : ]]; then
-                        FINAL_CONNECT_ADDR="$MANUAL_IPV6"
-                        echo -e "${GREEN}>>> 已采用手动 IPv6 地址: $FINAL_CONNECT_ADDR${PLAIN}"
-                        break
-                    else
-                        echo -e "${RED}格式错误，请输入有效的 IPv6 地址 (包含冒号)。${PLAIN}"
-                    fi
-                else
-                    echo -e "${YELLOW}>>> 未输入，将强制使用原地址 (可能会连接失败)。${PLAIN}"
-                    break
-                fi
-            done
-        fi
-    fi
-    # ========================================================
+    echo -e "${GREEN}>>> 远程连接地址已获取: ${SKYBLUE}$FINAL_CONNECT_ADDR${PLAIN}"
+    echo -e "${GRAY}    (此域名通常支持双栈，系统将自动使用 IPv6 连接)${PLAIN}"
 
     cp "$CONFIG_FILE" "$BACKUP_FILE"
 
@@ -193,7 +148,7 @@ inject_config() {
            /tmp/new_users.json > /tmp/new_users.json.tmp && mv /tmp/new_users.json.tmp /tmp/new_users.json
 
         # [生成出站]
-        # 关键点：address 使用 FINAL_CONNECT_ADDR (可能是 IP 或 host)，SNI 使用 wshost
+        # 移除 sockopt: domainStrategy: UseIPv6，完全复刻官方脚本行为，依赖系统 DNS
         jq -n \
            --arg tag "$TAG_OUT" \
            --arg conn_addr "$FINAL_CONNECT_ADDR" \
@@ -209,8 +164,7 @@ inject_config() {
                   "network": "ws", 
                   "security": $tls, 
                   "tlsSettings": (if $tls == "tls" then {"serverName": $sni_host} else null end),
-                  "wsSettings": { "path": $path, "headers": {"Host": $sni_host} },
-                  "sockopt": { "domainStrategy": "UseIPv6" } 
+                  "wsSettings": { "path": $path, "headers": {"Host": $sni_host} }
               }
            }' >> /tmp/outbound_block.json
 
@@ -252,7 +206,7 @@ finish_setup() {
     fi
 
     echo -e "\n${GREEN}======================================================${PLAIN}"
-    echo -e "${GREEN}   ICMP9 中转部署成功 (v3.3 IPv6-Host-Fix)            ${PLAIN}"
+    echo -e "${GREEN}   ICMP9 中转部署成功 (v3.4 Official Logic)           ${PLAIN}"
     echo -e "${GREEN}======================================================${PLAIN}"
     echo -e "远程连接地址: ${SKYBLUE}${FINAL_CONNECT_ADDR}${PLAIN}"
     echo -e "SNI 伪装域名: ${YELLOW}${R_WSHOST}${PLAIN}"
