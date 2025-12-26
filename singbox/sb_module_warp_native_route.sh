@@ -1,19 +1,26 @@
 #!/bin/bash
 # ==============================================================================
-# --- AI Developer Instructions (Do Not Remove) ---
-# CRITICAL: This environment uses Sing-box v1.12+ configuration standards.
-# 1. NO BRIDGE OUTBOUNDS: Strict prohibition on using `type: direct` with `detour`.
-# 2. ENDPOINT ROUTING: The WireGuard endpoint MUST be tagged "WARP" and used directly as the route outbound.
-# 3. FIELD NAMES: Inside `peers`, use `address` and `port`. DO NOT use `server` or `server_port`.
-# 4. DOMAIN USAGE: Default to "engage.cloudflareclient.com" unless IPv6-only.
+# --- AI Developer Instructions (CRITICAL: Sing-box v1.12+ Standards) ---
+# 
+# 1. ARCHITECTURE MIGRATION (WireGuard Outbound -> Endpoint):
+#    - DEPRECATED: "outbounds": [{ "type": "wireguard", ... }]
+#    - REQUIRED:   "endpoints": [{ "type": "wireguard", "tag": "WARP", ... }]
+#
+# 2. FIELD MAPPING RULES (Strict Adherence Required):
+#    - Remote IP:   Use `peers[].address` (NOT `server`)
+#    - Remote Port: Use `peers[].port`    (NOT `server_port`)
+#    - Local IP:    Use `address`         (NOT `local_address`)
+#
+# 3. ROUTING LOGIC:
+#    - The Endpoint TAG (e.g., "WARP") must be used directly in `route.rules`.
+#    - DO NOT create a bridge outbound (type: direct, detour: WARP).
 # ==============================================================================
 
 # ============================================================
-#  Sing-box Native WARP 管理模块 (v3.8 Domain-Standard)
-#  - 架构: Endpoint Direct Route (适配 Sing-box 1.12+)
-#  - 修复: 移除 direct outbound detour 导致的语法错误
-#  - 回滚: 恢复使用域名连接 Endpoint (符合通用标准)
-#  - 增强: 头部增加 AI 开发者准则，防止逻辑回退
+#  Sing-box Native WARP 管理模块 (v3.9 Final-Standard)
+#  - 适配: Sing-box v1.12+ Endpoint 架构
+#  - 修复: 彻底解决 detour 语法错误与字段名称过时问题
+#  - 策略: 默认使用域名连接 (engage.cloudflareclient.com)
 # ============================================================
 
 RED='\033[0;31m'
@@ -65,7 +72,7 @@ ensure_python() {
 check_env() {
     echo -e "${YELLOW}正在执行网络环境检测...${PLAIN}"
     
-    # [修正] 恢复默认使用域名，符合标准
+    # [标准] 默认使用域名，符合通用做法
     FINAL_EP_ADDR="engage.cloudflareclient.com"
     FINAL_EP_PORT=2408
 
@@ -75,7 +82,7 @@ check_env() {
     if [[ "$ipv4_check" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         echo -e "${GREEN}>>> 检测到有效 IPv4 环境。${PLAIN}"
     else
-        # IPv6-Only 环境切换为官方 IPv6 Endpoint
+        # IPv6-Only 环境切换为官方 IPv6 Endpoint IP
         FINAL_EP_ADDR="2606:4700:d0::a29f:c001"
         echo -e "${SKYBLUE}>>> 检测到纯 IPv6 环境，切换为专用 Endpoint: ${FINAL_EP_ADDR}${PLAIN}"
     fi
@@ -161,8 +168,8 @@ write_warp_config() {
     check_env
 
     # 1. 生成 Endpoint 
-    # Tag: WARP (作为路由目标)
-    # Fields: address/port (新标准)
+    # [Compliance] 使用 Endpoint 架构，Tag 设为 WARP
+    # [Compliance] Peers 字段使用 address/port (新标准)
     local endpoint_json=$(jq -n \
         --arg priv "$priv" \
         --arg pub "$pub" \
@@ -187,20 +194,18 @@ write_warp_config() {
             ] 
         }')
 
-    # [规则] 禁止生成 Bridge Outbound
-
-    echo -e "${YELLOW}正在应用 v3.8 Domain-Standard 架构配置...${PLAIN}"
+    echo -e "${YELLOW}正在应用 v3.9 Final 架构配置...${PLAIN}"
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
     local TMP_CONF=$(mktemp)
     
-    # 初始化
+    # 初始化: 确保 endpoints 数组存在
     jq '.endpoints = (.endpoints // []) | .outbounds = (.outbounds // [])' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
 
-    # 清理旧配置
+    # 清理旧配置: 移除所有 WARP 相关的 outbound 和 endpoint
     jq 'del(.outbounds[] | select(.tag == "WARP" or .tag == "warp" or .type == "wireguard"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq 'del(.endpoints[] | select(.tag == "warp-endpoint" or .tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
 
-    # 注入 Endpoint
+    # 注入 Endpoint (直接进入 endpoints 数组)
     jq --argjson ep "$endpoint_json" '.endpoints += [$ep]' "$CONFIG_FILE" > "$TMP_CONF"
     
     if [[ $? -eq 0 && -s "$TMP_CONF" ]]; then
@@ -272,9 +277,8 @@ manual_warp() {
 # ==========================================
 
 ensure_warp_exists() {
-    # 检查是否存在名为 WARP 的 endpoint 或 outbound
-    if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1 || \
-       jq -e '.outbounds[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
+    # 检查是否存在名为 WARP 的 endpoint (不查 outbound，因为新版不再使用 outbound)
+    if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
        return 0
     fi
     
@@ -352,7 +356,7 @@ uninstall_warp() {
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak_un"
     local TMP_CONF=$(mktemp)
     
-    # 清理所有 WARP 相关配置
+    # 清理所有 WARP 相关配置 (Outbound + Endpoint + Rules)
     jq 'del(.outbounds[] | select(.tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq 'del(.endpoints[] | select(.tag == "warp-endpoint" or .tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq 'del(.route.rules[] | select(.outbound == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
@@ -371,7 +375,7 @@ show_menu() {
         local st="${RED}未配置${PLAIN}"
         if [[ -f "$CONFIG_FILE" ]]; then
             if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
-                st="${GREEN}已配置 (v3.8 Domain-Std)${PLAIN}"
+                st="${GREEN}已配置 (v3.9 Final)${PLAIN}"
             fi
         fi
         echo -e "================ Native WARP 管理中心 (Sing-box 1.12+) ================"
@@ -399,7 +403,7 @@ show_menu() {
 }
 
 auto_main() {
-    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署 (v3.8)...${PLAIN}"
+    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署 (v3.9)...${PLAIN}"
     check_dependencies
     if [[ -n "$WARP_PRIV_KEY" ]] && [[ -n "$WARP_IPV6" ]]; then
         save_credentials "$WARP_PRIV_KEY" "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=" "172.16.0.2/32" "$WARP_IPV6" "${WARP_RESERVED:-[0,0,0]}"
