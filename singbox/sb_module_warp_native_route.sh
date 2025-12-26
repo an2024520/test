@@ -82,10 +82,15 @@ restart_sb() {
     mkdir -p /var/log/sing-box/ && chmod 777 /var/log/sing-box/ >/dev/null 2>&1
     echo -e "${YELLOW}重启 Sing-box 服务...${PLAIN}"
     
-    if command -v sing-box &> /dev/null; then
-        if ! sing-box check -c "$CONFIG_FILE" > /dev/null 2>&1; then
-             echo -e "${RED}配置语法校验失败！回滚中...${PLAIN}"
-             [[ -f "${CONFIG_FILE}.bak" ]] && cp "${CONFIG_FILE}.bak" "$CONFIG_FILE"
+  if command -v sing-box &> /dev/null; then
+        echo -e "${YELLOW}正在执行语法校验...${PLAIN}"
+        # 1. 去掉 > /dev/null 2>&1，让错误显示在屏幕上
+        if ! sing-box check -c "$CONFIG_FILE"; then
+             echo -e "${RED}配置语法校验严重失败！${PLAIN}"
+             echo -e "${RED}请截图上方报错信息！${PLAIN}"
+             
+             # 2. 暂时注释掉回滚，这样你可以用 cat 查看 config.json 到底哪里错了
+             # [[ -f "${CONFIG_FILE}.bak" ]] && cp "${CONFIG_FILE}.bak" "$CONFIG_FILE"
              return
         fi
     fi
