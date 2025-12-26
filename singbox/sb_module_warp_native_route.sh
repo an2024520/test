@@ -2,7 +2,7 @@
 # ==============================================================================
 # --- AI Developer Instructions (CRITICAL: Sing-box v1.12+ Standards) ---
 # 
-# 1. ARCHITECTURE MIGRATION (WireGuard Outbound -> Endpoint):
+# 1. ARCHITECTURE & MIGRATION (Mandatory):
 #    - DEPRECATED: "outbounds": [{ "type": "wireguard", ... }]
 #    - REQUIRED:   "endpoints": [{ "type": "wireguard", "tag": "WARP", ... }]
 #
@@ -11,10 +11,21 @@
 #    - Remote Port: Use `peers[].port`    (NOT `server_port`)
 #    - Local IP:    Use `address`         (NOT `local_address`)
 #
-# 3. ROUTING LOGIC:
-#    - The Endpoint TAG (e.g., "WARP") must be used directly in `route.rules`.
-#    - DO NOT create a bridge outbound (type: direct, detour: WARP).
+# 3. ROUTING LOGIC (No Bridge Outbounds):
+#    - DIRECT ROUTING: The Endpoint TAG (must be "WARP") is used directly in `route.rules`.
+#    - PROHIBITED:     Strictly NO `type: direct` with `detour`. Bridge outbounds are removed in v1.12.
+#
+# 4. DEFAULT STRATEGY:
+#    - DOMAIN: Default to "engage.cloudflareclient.com" to align with standard practices.
+#    - IP FALLBACK: Only use IPv6 IP literals if the environment is IPv6-Only.
 # ==============================================================================
+
+# ============================================================
+#  Sing-box Native WARP 管理模块 (v3.9 Final-Standard)
+#  - 适配: Sing-box v1.12+ Endpoint 架构
+#  - 修复: 彻底解决 detour 语法错误与字段名称过时问题
+#  - 策略: 默认使用域名连接 (engage.cloudflareclient.com)
+# ============================================================
 
 # ============================================================
 #  Sing-box Native WARP 管理模块 (v3.9 Final-Standard)
