@@ -1,10 +1,9 @@
 #!/bin/bash
 
 # ============================================================
-#  ICMP9 中转扩展模块 (v3.6 UA-Fix Edition)
-#  - 架构: 端口锚定 -> 协议自适应 -> 增量注入
-#  - 逻辑: 只有 Cloudflare (wshost) 才有 IPv6，必须连它
-#  - 修复: 添加 Chrome User-Agent 伪装，突破 403 封锁
+#  ICMP9 中转扩展模块 (v3.8 Clean Logic)
+#  - 核心: 既然已放行白名单，回归最纯净的连接逻辑
+#  - 策略: 直连 wshost (CF双栈域名)，去除所有复杂伪装
 # ============================================================
 
 RED='\033[0;31m'
@@ -12,8 +11,6 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 SKYBLUE='\033[0;36m'
 PLAIN='\033[0m'
-
-echo "脚本版本号V3.6"
 
 CONFIG_FILE="/usr/local/etc/xray/config.json"
 BACKUP_FILE="/usr/local/etc/xray/config.json.bak"
@@ -33,7 +30,6 @@ check_env() {
         echo -e "${RED}错误: 未找到 Xray 配置文件${PLAIN}"; exit 1
     fi
 
-    # 自动获取端口
     if [[ "$AUTO_SETUP" == "true" ]] && [[ -n "$ICMP9_PORT" ]]; then
         LOCAL_PORT="$ICMP9_PORT"
     else
@@ -41,15 +37,18 @@ check_env() {
         LOCAL_PORT=${input_port:-8080}
     fi
 
-    # 锚定节点
     TARGET_INDEX=$(jq -r --argjson p "$LOCAL_PORT" '.inbounds | to_entries | map(select(.value.port == $p)) | .[0].key' "$CONFIG_FILE")
     if [[ -z "$TARGET_INDEX" || "$TARGET_INDEX" == "null" ]]; then
         echo -e "${RED}错误: 未找到端口 $LOCAL_PORT${PLAIN}"; exit 1
     fi
 
     LOCAL_PROTO=$(jq -r ".inbounds[$TARGET_INDEX].protocol" "$CONFIG_FILE")
-    LOCAL_PATH=$(jq -r ".inbounds[$TARGET_INDEX].streamSettings.wsSettings.path // \"/\"" "$CONFIG_FILE")
     echo -e "${GREEN}>>> 锁定端口: $LOCAL_PORT ($LOCAL_PROTO)${PLAIN}"
+    
+    # 检测纯 IPv6 提示
+    if ! curl -4 -s -m 2 http://ip.sb >/dev/null; then
+        echo -e "${SKYBLUE}>>> 检测到纯 IPv6 环境 (将使用 CF IPv6 通道)${PLAIN}"
+    fi
 }
 
 get_user_input() {
@@ -63,20 +62,21 @@ get_user_input() {
 }
 
 # ============================================================
-# 2. 注入配置 (User-Agent 伪装核心)
+# 2. 注入配置 (回归官方标准逻辑)
 # ============================================================
 inject_config() {
-    echo -e "${YELLOW}>>> [配置] 正在生成抗封锁配置...${PLAIN}"
+    echo -e "${YELLOW}>>> [配置] 生成标准配置 (无特殊伪装)...${PLAIN}"
     
     NODES_JSON=$(curl -s "$API_NODES")
     RAW_CFG=$(curl -s "$API_CONFIG")
     
-    # 关键：提取 wshost (CF域名)
+    # 提取官方脚本使用的核心参数
     R_WSHOST=$(echo "$RAW_CFG" | grep "^wshost|" | cut -d'|' -f2 | tr -d '\r\n')
     R_PORT=$(echo "$RAW_CFG" | grep "^port|" | cut -d'|' -f2 | tr -d '\r\n')
     R_TLS="none"; [[ $(echo "$RAW_CFG" | grep "^tls|" | cut -d'|' -f2) == "1" ]] && R_TLS="tls"
 
-    # 核心逻辑：地址和伪装都用 wshost (利用 CF 的 IPv6 能力)
+    # 逻辑核心：连接地址 = 伪装域名 = wshost
+    # 这是官方脚本能跑通纯 IPv6 的关键，因为它走的是 Cloudflare 的双栈入口
     FINAL_ADDR="$R_WSHOST"
 
     cp "$CONFIG_FILE" "$BACKUP_FILE"
@@ -102,7 +102,10 @@ inject_config() {
         jq --arg uuid "$NEW_UUID" --arg email "icmp9-${CODE}" '. + [{"id": $uuid, "email": $email}]' \
            /tmp/new_users.json > /tmp/new_users.json.tmp && mv /tmp/new_users.json.tmp /tmp/new_users.json
 
-        # 出站 (Outbound) - 加入 User-Agent 伪装
+        # 出站配置：最纯净的标准 VMess+WS+TLS
+        # 不强制 UseIPv6 (信赖系统 DNS)
+        # 不加 uTLS (信赖 IP 白名单)
+        # 不加 Chrome UA (信赖 IP 白名单)
         jq -n \
            --arg tag "icmp9-out-${CODE}" \
            --arg addr "$FINAL_ADDR" \
@@ -117,12 +120,14 @@ inject_config() {
               "streamSettings": { 
                   "network": "ws", 
                   "security": $tls, 
-                  "tlsSettings": (if $tls == "tls" then {"serverName": $sni, "allowInsecure": false} else null end),
+                  "tlsSettings": (if $tls == "tls" then {
+                      "serverName": $sni, 
+                      "allowInsecure": false
+                  } else null end),
                   "wsSettings": { 
                       "path": $path, 
                       "headers": {
-                          "Host": $sni,
-                          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                          "Host": $sni
                       } 
                   }
               }
@@ -158,8 +163,9 @@ finish_setup() {
         echo -e "${RED}配置失败，正在回滚...${PLAIN}"; cp "$BACKUP_FILE" "$CONFIG_FILE"; systemctl restart xray; exit 1
     fi
 
-    echo -e "\n${GREEN}=== 部署成功 (v3.6 UA抗封锁版) ===${PLAIN}"
-    echo -e "连接地址: ${SKYBLUE}${R_WSHOST}${PLAIN} (IPv6)"
+    echo -e "\n${GREEN}=== 部署成功 (v3.8 Clean Logic) ===${PLAIN}"
+    echo -e "连接地址: ${SKYBLUE}${R_WSHOST}${PLAIN}"
+    echo -e "状态:     ${GREEN}标准连接 (依赖 IP 白名单)${PLAIN}"
     
     echo "$NODES_JSON" | jq -c '.countries[]?' | while read -r node; do
         CODE=$(echo "$node" | jq -r '.code')
