@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  ICMP9 中转扩展模块 (v3.2 IPv6-Split-Fix)
+#  ICMP9 中转扩展模块 (v3.3 IPv6-Host-Fix)
 #  - 架构: 端口锚定 -> 协议自适应 -> 增量注入
-#  - 修复: 纯 IPv6 环境下远程域名无 AAAA 记录导致的无法连接
-#  - 核心: 实现“连接地址(IPv6)”与“伪装域名(SNI)”分离配置
+#  - 修复: 修正 v3.2 误用 wshost 作为连接地址导致 403 的 BUG
+#  - 逻辑: 优先连接 API 指定的 host，若无 IPv6 则手动介入
 # ============================================================
 
 RED='\033[0;31m'
@@ -101,7 +101,7 @@ get_user_input() {
 }
 
 # ============================================================
-# 2. 核心注入逻辑 (地址分离修复版)
+# 2. 核心注入逻辑 (地址分离修复版 v3.3)
 # ============================================================
 inject_config() {
     echo -e "${YELLOW}>>> [配置] 获取节点数据...${PLAIN}"
@@ -114,6 +114,8 @@ inject_config() {
     fi
     
     RAW_CFG=$(curl -s "$API_CONFIG")
+    # [修正] 这里正确读取 host 作为连接地址，wshost 作为伪装域名
+    R_HOST=$(echo "$RAW_CFG" | grep "^host|" | cut -d'|' -f2 | tr -d '\r\n')
     R_WSHOST=$(echo "$RAW_CFG" | grep "^wshost|" | cut -d'|' -f2 | tr -d '\r\n')
     R_PORT=$(echo "$RAW_CFG" | grep "^port|" | cut -d'|' -f2 | tr -d '\r\n')
     R_TLS="none"; [[ $(echo "$RAW_CFG" | grep "^tls|" | cut -d'|' -f2) == "1" ]] && R_TLS="tls"
@@ -121,25 +123,32 @@ inject_config() {
     # ========================================================
     # [核心修复] 远程地址 IPv6 适配检查
     # ========================================================
-    FINAL_CONNECT_ADDR="$R_WSHOST"
+    # 默认连接地址为 API 提供的 host (例如 www.csgo.com 或某个 IP)
+    FINAL_CONNECT_ADDR="$R_HOST"
     
     if [[ "$IS_IPV6_ONLY" == "true" ]]; then
-        echo -e "${YELLOW}>>> 正在检测远程域名 ($R_WSHOST) 的 IPv6 连通性...${PLAIN}"
+        echo -e "${YELLOW}>>> 正在检测远程连接地址 ($R_HOST) 的 IPv6 连通性...${PLAIN}"
         
         # 尝试解析 AAAA 记录
-        AAAA_RECORD=$(dig AAAA +short "$R_WSHOST" | head -n 1)
+        AAAA_RECORD=""
+        if [[ "$R_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+             # 如果 host 直接是 IPv4 IP，肯定没有 AAAA
+             AAAA_RECORD=""
+        else
+             AAAA_RECORD=$(dig AAAA +short "$R_HOST" | head -n 1)
+        fi
         
         if [[ -n "$AAAA_RECORD" ]]; then
             echo -e "${GREEN}>>> 成功解析到 IPv6 地址: $AAAA_RECORD${PLAIN}"
-            # 即使解析到了，为了保险，也可以选择是否强制使用 IP，这里默认信赖解析
+            # 使用域名，让 Xray 通过 UseIPv6 策略自动连接解析到的 IPv6
         else
-            echo -e "${RED}警告: 纯 IPv6 环境下，远程域名 $R_WSHOST 未解析到 IPv6 地址！${PLAIN}"
+            echo -e "${RED}警告: 纯 IPv6 环境下，远程地址 $R_HOST 不支持 IPv6 或解析失败！${PLAIN}"
             echo -e "${RED}      直接连接会导致 'Network is unreachable'。${PLAIN}"
             echo -e "${SKYBLUE}>>> 解决方案: 请手动输入远程节点的 IPv6 地址。${PLAIN}"
-            echo -e "${GRAY}    (此地址将用于建立连接，原域名仍用于 TLS 握手验证)${PLAIN}"
+            echo -e "${GRAY}    (您需要填入您在白名单放行时获取的那个远程节点 IPv6)${PLAIN}"
             
             while true; do
-                read -p "请输入远程 IPv6 地址 (留空则尝试直接使用域名): " MANUAL_IPV6
+                read -p "请输入远程 IPv6 地址: " MANUAL_IPV6
                 if [[ -n "$MANUAL_IPV6" ]]; then
                     # 简单验证 IPv6 格式
                     if [[ "$MANUAL_IPV6" =~ : ]]; then
@@ -150,7 +159,7 @@ inject_config() {
                         echo -e "${RED}格式错误，请输入有效的 IPv6 地址 (包含冒号)。${PLAIN}"
                     fi
                 else
-                    echo -e "${YELLOW}>>> 未输入，将保持使用域名 (可能会连接失败)。${PLAIN}"
+                    echo -e "${YELLOW}>>> 未输入，将强制使用原地址 (可能会连接失败)。${PLAIN}"
                     break
                 fi
             done
@@ -184,7 +193,7 @@ inject_config() {
            /tmp/new_users.json > /tmp/new_users.json.tmp && mv /tmp/new_users.json.tmp /tmp/new_users.json
 
         # [生成出站]
-        # 关键点：address 使用 $conn_addr (可能是 IP)，Host/SNI 使用 $sni_host (域名)
+        # 关键点：address 使用 FINAL_CONNECT_ADDR (可能是 IP 或 host)，SNI 使用 wshost
         jq -n \
            --arg tag "$TAG_OUT" \
            --arg conn_addr "$FINAL_CONNECT_ADDR" \
@@ -243,7 +252,7 @@ finish_setup() {
     fi
 
     echo -e "\n${GREEN}======================================================${PLAIN}"
-    echo -e "${GREEN}   ICMP9 中转部署成功 (v3.2 IPv6 增强版)              ${PLAIN}"
+    echo -e "${GREEN}   ICMP9 中转部署成功 (v3.3 IPv6-Host-Fix)            ${PLAIN}"
     echo -e "${GREEN}======================================================${PLAIN}"
     echo -e "远程连接地址: ${SKYBLUE}${FINAL_CONNECT_ADDR}${PLAIN}"
     echo -e "SNI 伪装域名: ${YELLOW}${R_WSHOST}${PLAIN}"
