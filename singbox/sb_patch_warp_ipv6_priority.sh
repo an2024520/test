@@ -1,14 +1,12 @@
 #!/bin/bash
-echo "4.0"
-sleep 5
 # ==============================================================================
 # Script Name: singbox_patch_warp_ipv6_priority.sh
-# Version: v4.9 (Crash Fix / Auto-Direct Inject)
+# Version: v5.0 (Strict v1.12+ Compliance)
 # 
 # Update Log:
-#   v4.9: [FATAL Fix] Fixed "detour to an empty direct outbound" error.
-#         Logic: Automatically injects a fallback "DIRECT-FIX" outbound if no valid direct tag is found.
-#   v4.8: Stability fixes.
+#   v5.0: [CRITICAL FIX] Removed "detour" field from DNS servers. 
+#         Fixes "detour to an empty direct outbound makes no sense" crash in v1.12+.
+#   v4.9: Auto-Direct Inject (Deprecated, logic updated to v5.0 standard).
 # ==============================================================================
 
 RED='\033[0;31m'
@@ -74,29 +72,10 @@ check_env() {
     export FINAL_EP_PORT
 }
 
-# --- [v4.9 新增] 强制获取有效的直连 Tag ---
-ensure_valid_direct_tag() {
-    # 1. 尝试寻找现有的 type=direct 出口
-    local tag=$(jq -r '.outbounds[] | select(.type=="direct") | .tag' "$CONFIG_FILE" | head -n1)
-    
-    # 2. 如果找到了，直接返回
-    if [[ -n "$tag" && "$tag" != "null" ]]; then
-        echo "$tag"
-        return
-    fi
-    
-    # 3. 如果没找到，说明配置文件可能很怪，或者没有直连出口。
-    # 必须注入一个专用直连出口，否则 DNS 会报错崩溃。
-    local fix_tag="DIRECT-FIX"
-    
-    # 检查是否已经注入过
-    if ! jq -e --arg t "$fix_tag" '.outbounds[] | select(.tag == $t)' "$CONFIG_FILE" >/dev/null 2>&1; then
-        # 注入逻辑
-        local TMP_CONF=$(mktemp)
-        jq --arg t "$fix_tag" '.outbounds += [{"type": "direct", "tag": $t}]' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
-    fi
-    
-    echo "$fix_tag"
+# --- [v5.0] 移除多余的 Tag 获取逻辑，DNS不再需要 detour ---
+get_direct_tag() {
+    local tag=$(jq -r '.outbounds[] | select(.type=="direct" or .tag=="direct" or .tag=="freedom") | .tag' "$CONFIG_FILE" | head -n1)
+    echo "${tag:-direct}"
 }
 
 restart_sb() {
@@ -290,25 +269,24 @@ apply_routing_rule() {
 get_anti_loop_rule() {
     if [[ -z "$FINAL_EP_ADDR" ]]; then check_env >/dev/null; fi
     local ip_cidr="[]"
-    local direct_tag=$(ensure_valid_direct_tag) # 使用新函数确保 Tag 存在
+    local direct_tag=$(get_direct_tag)
     if [[ "$FINAL_EP_ADDR" == *":"* ]]; then ip_cidr="[\"${FINAL_EP_ADDR}/128\"]"; fi
     jq -n --argjson ip "$ip_cidr" --arg dt "$direct_tag" '{ "domain": ["engage.cloudflareclient.com", "cloudflare.com"], "ip_cidr": $ip, "outbound": $dt }'
 }
 
 fix_dns_strict_v6() {
     local TMP_CONF=$(mktemp)
-    # 获取或创建直连 Tag
-    local direct_tag=$(ensure_valid_direct_tag)
-    
-    local clean_dns=$(jq -n --arg dt "$direct_tag" '{
+    # [v5.0 修正] 彻底移除 "detour": $dt 字段
+    # v1.12+ 严禁将 DNS detour 到一个空的 direct outbound
+    local clean_dns='{
         "servers": [
-            {"tag": "google", "type": "udp", "server": "2001:4860:4860::8888", "detour": $dt},
-            {"tag": "local", "type": "local", "detour": $dt}
+            {"tag": "google", "type": "udp", "server": "2001:4860:4860::8888"},
+            {"tag": "local", "type": "local"}
         ],
         "rules": [],
         "final": "google",
         "strategy": "prefer_ipv6"
-    }')
+    }'
     
     jq --argjson dns "$clean_dns" '.dns = $dns' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq '.route.default_domain_resolver = "google"' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
@@ -334,7 +312,7 @@ mode_global() {
     echo -e "${GREEN}全局接管策略已应用。${PLAIN}"
 }
 
-# [v4.9] 安全修复版
+# [v5.0 Fixed] 彻底修复 DNS detour 崩溃
 mode_flexible_node() {
     ensure_warp_exists || return
     
@@ -365,14 +343,16 @@ mode_flexible_node() {
     echo -e " c. 双栈全部走 WARP (完全隐身)"
     read -p "请选择: " sub
     
-    # [关键] 修复 DNS 并获取有效的 Direct Tag
+    # 强制优化 DNS (不带 detour)
     fix_dns_strict_v6
-    local direct_tag=$(ensure_valid_direct_tag)
+    
+    local direct_tag=$(get_direct_tag)
     local anti_loop=$(get_anti_loop_rule)
     
     local rules="[]"
     case "$sub" in
         a)
+            # 选中节点: OpenAI->Warp, v4->Warp, v6->Direct
             rules=$(jq -n --argjson tags "$tags_json" --arg dt "$direct_tag" '[
                 { "inbound": $tags, "domain_suffix": ["openai.com","ai.com","chatgpt.com"], "outbound": "WARP" },
                 { "inbound": $tags, "ip_version": 4, "outbound": "WARP" },
@@ -395,9 +375,10 @@ mode_flexible_node() {
     echo -e "${YELLOW}正在应用策略...${PLAIN}"
     local TMP_CONF=$(mktemp)
     
+    # 清理旧规则
     jq 'del(.route.rules[] | select(.outbound == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     
-    # 注入规则 (Anti-Loop 最优先)
+    # 注入 (Anti-Loop + Rules)
     jq --argjson r "$rules" --argjson al "$anti_loop" '.route.rules = [$al] + $r + .route.rules' "$CONFIG_FILE" > "$TMP_CONF"
     
     if [[ $? -eq 0 && -s "$TMP_CONF" ]]; then
@@ -441,7 +422,7 @@ show_menu() {
         local st="${RED}未配置${PLAIN}"
         if [[ -f "$CONFIG_FILE" ]]; then
             if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
-                st="${GREEN}已配置 (v4.9 Fix)${PLAIN}"
+                st="${GREEN}已配置 (v5.0 Strict)${PLAIN}"
             fi
         fi
         echo -e "================ Native WARP 管理中心 (Sing-box 1.12+) ================"
@@ -471,7 +452,7 @@ show_menu() {
 }
 
 auto_main() {
-    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署 (v4.9)...${PLAIN}"
+    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署 (v5.0)...${PLAIN}"
     check_dependencies
     if [[ -n "$WARP_PRIV_KEY" ]] && [[ -n "$WARP_IPV6" ]]; then
         save_credentials "$WARP_PRIV_KEY" "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=" "172.16.0.2/32" "$WARP_IPV6" "${WARP_RESERVED:-[0,0,0]}"
@@ -483,7 +464,7 @@ auto_main() {
     if [[ -n "$WARP_INBOUND_TAGS" ]]; then
         fix_dns_strict_v6
         local tags_json=$(echo "$WARP_INBOUND_TAGS" | jq -R 'split(",")')
-        local direct_tag=$(ensure_valid_direct_tag)
+        local direct_tag=$(get_direct_tag)
         local anti_loop=$(get_anti_loop_rule)
         local rules=$(jq -n --argjson tags "$tags_json" --arg dt "$direct_tag" '[
             { "inbound": $tags, "domain_suffix": ["openai.com"], "outbound": "WARP" },
