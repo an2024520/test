@@ -42,11 +42,11 @@
 	xray vlessenc
 	```
     * 2.  **解析输出 (关键)**:
-          * `vlessenc` 命令（在 ML-KEM-768 模式下）输出的是包含 JSON 字段的文本，**不是** X25519 格式。
-          * 提取逻辑**: 先定位包含 `Authentication: ML-KEM-768` 的段落。
-          * 私钥** (服务端): 提取 `"decryption":` 字段后双引号内的字符串。
-          * 公钥** (客户端): 提取 `"encryption":` 字段后双引号内的字符串。
-          * 密钥提取脚本示例 (推荐写法):
+          * **`vlessenc`** 命令（在 ML-KEM-768 模式下）输出的是包含 JSON 字段的文本，**不是** X25519 格式。
+          * **提取逻辑**: 先定位包含 `Authentication: ML-KEM-768` 的段落。
+          * **私钥** (服务端): 提取 `"decryption":` 字段后双引号内的字符串。
+          * **公钥** (客户端): 提取 `"encryption":` 字段后双引号内的字符串。
+          * **密钥提取脚本示例** (推荐写法):
 	```bash
 		# 生成密钥
 		vlessenc_output=$(xray vlessenc)
