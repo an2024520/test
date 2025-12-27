@@ -1,5 +1,5 @@
 #!/bin/bash
-echo "v3.2"
+echo "av3.2"
 sleep 5
 # ============================================================
 #  Sing-box WARP IPv6 优先分流补丁 (v3.2 Auto-Strategy)
