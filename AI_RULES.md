@@ -89,7 +89,7 @@
                       // 注意：argosbx.sh 在 XHTTP 模式下也保留了 flow，但Gemini认为XHTTP下xtls-rprx-vision是无效的。
                      }
                    ],
-                   # 关键点：注入抗量子解密私钥
+                   // 关键点：注入抗量子解密私钥
                    "decryption": "	// 这里填入上面提取的 mlkem_decryption"
                  },
                  "streamSettings": {
@@ -101,7 +101,7 @@
                    },
                    "realitySettings": {
                      "show": false,
-                     "dest": "www.apple.com:443", # 示例回落域名
+                     "dest": "www.apple.com:443", // 示例回落域名
                      "serverNames": ["www.apple.com"],
                      "privateKey": "这里填入 reality_private",
                      "shortIds": ["这里填入 reality_shortid"]
