@@ -90,7 +90,7 @@ FILE_ADD_VISION="xray_vless_vision_reality.sh"
 FILE_ADD_WS="xray_vless_ws_tls.sh"
 FILE_ADD_TUNNEL="xray_vless_ws_tunnel.sh"
 # [新增] ML-KEM 模块
-FILE_ADD_MLKEM="xray_vless_xhttp_reality_mlkem.sh"
+FILE_ADD_MLKEM="xray_vless_xhttp_reality_ENC.sh"
 
 FILE_XRAY_WARP="xray_module_warp_native_route.sh"
 FILE_XRAY_INFO="xray_get_node_details.sh"
