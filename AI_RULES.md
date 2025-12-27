@@ -113,10 +113,9 @@
 	```
 
 
-* **客户端分享链接**:
-          将提取的 `encryption` 值作为参数追加到链接中：
-          * **参数格式**: `encryption=MLKEM_ENCRYPTION_KEY`
-          * **完整示例**: `vless://UUID@IP:PORT?encryption=MLKEM_ENCRYPTION_KEY&flow=xtls-rprx-vision&security=reality&sni=SNI_DOMAIN&fp=chrome&pbk=REALITY_PUBLIC_KEY&sid=SHORT_ID&type=xhttp&path=PATH_VALUE&mode=auto#NAME`
+* **客户端分享链接**: 将提取的 `encryption` 值作为参数追加到链接中：
+    * 1.  **参数格式**: `encryption=MLKEM_ENCRYPTION_KEY`
+    * 2.  **完整示例**: `vless://UUID@IP:PORT?encryption=MLKEM_ENCRYPTION_KEY&flow=xtls-rprx-vision&security=reality&sni=SNI_DOMAIN&fp=chrome&pbk=REALITY_PUBLIC_KEY&sid=SHORT_ID&type=xhttp&path=PATH_VALUE&mode=auto#NAME`
 
 
 
