@@ -1,15 +1,13 @@
 #!/bin/bash
-echo "2.0"
-sleep 5
 # ==============================================================================
 # Script Name: singbox_patch_warp_ipv6_priority.sh
-# Version: v4.5 (Multi-Node Split Tunnel Edition)
+# Version: v4.7 (Clear Priority Description)
 # 
 # Update Log:
-#   v4.5: Added "Multi-Node Select" mode (Ported from Xray patch).
-#         - Allows selecting specific inbound nodes by index (e.g., "1 3").
-#         - Applies IPv6-Priority strategy ONLY to selected nodes.
-#   v4.4: Pure IPv6 DNS optimization.
+#   v4.7: Clarified menu descriptions to emphasize "IPv6 First/Priority".
+#   v4.6: Flexible Node Strategy (Merged Node-Select with Policy-Select).
+#   v4.5: Multi-Node Select.
+#   v4.4: Pure IPv6 DNS.
 # ==============================================================================
 
 RED='\033[0;31m'
@@ -270,7 +268,7 @@ get_anti_loop_rule() {
 
 fix_dns_strict_v6() {
     local TMP_CONF=$(mktemp)
-    # 纯净 IPv6 DNS 配置
+    # 纯净 IPv6 DNS 配置: Google v6
     local clean_dns='{
         "servers": [
             {"tag": "google", "type": "udp", "server": "2001:4860:4860::8888", "detour": "direct"},
@@ -282,10 +280,6 @@ fix_dns_strict_v6() {
     }'
     jq --argjson dns "$clean_dns" '.dns = $dns' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq '.route.default_domain_resolver = "google"' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
-    
-    if [[ $? -eq 0 ]]; then
-        echo -e "${GREEN}>>> DNS 已优化为纯净 IPv6 模式 (Anti-Dirty IPv4)${PLAIN}"
-    fi
     rm "$TMP_CONF"
 }
 
@@ -309,23 +303,20 @@ mode_global() {
     echo -e "${GREEN}全局接管策略已应用。${PLAIN}"
 }
 
-# [v4.5 New] 多节点精确分流模式
-mode_multinode_ipv6_priority() {
+# [v4.7] 超级模式：指定节点 + 策略选择
+mode_flexible_node() {
     ensure_warp_exists || return
     
     echo -e "${YELLOW}正在读取节点列表...${PLAIN}"
-    # 1. 列出当前所有入站节点
     local node_list=$(jq -r '.inbounds[] | "\(.tag) | \(.type)"' "$CONFIG_FILE" | nl)
     if [[ -z "$node_list" ]]; then echo -e "${RED}无有效入站节点。${PLAIN}"; return; fi
     
     echo -e "------------------------------------------------"
     echo "$node_list"
     echo -e "------------------------------------------------"
-    echo -e "${SKYBLUE}请选择要开启 [IPv6直连+IPv4兜底] 的节点序号${PLAIN}"
-    echo -e "${GRAY}(支持多选，用空格分隔，例如: 1 3)${PLAIN}"
+    echo -e "${SKYBLUE}步骤 1/2: 选择节点序号 (空格分隔，如: 1 3)${PLAIN}"
     read -p "输入序号: " selection
     
-    # 2. 解析用户输入，构建 Tag 列表
     local tags_list=()
     for num in $selection; do
         local tag=$(echo "$node_list" | sed -n "${num}p" | awk -F'|' '{print $1}' | awk '{print $2}')
@@ -334,54 +325,52 @@ mode_multinode_ipv6_priority() {
             echo -e "已选中: ${GREEN}${tag}${PLAIN}"
         fi
     done
-    
-    if [[ ${#tags_list[@]} -eq 0 ]]; then
-        echo -e "${RED}未选中任何有效节点。${PLAIN}"; return
-    fi
-    
-    # 转换为 JSON 数组
+    if [[ ${#tags_list[@]} -eq 0 ]]; then echo -e "${RED}无效选择。${PLAIN}"; return; fi
     local tags_json=$(printf '%s\n' "${tags_list[@]}" | jq -R . | jq -s .)
 
-    echo -e "${YELLOW}正在注入多节点分流规则...${PLAIN}"
+    echo -e "\n${SKYBLUE}步骤 2/2: 选择接管策略${PLAIN}"
+    echo -e " a. IPv6 优先 (直连) + 仅 IPv4 走 WARP ${GREEN}[推荐: 适合脏IPv4双栈]${PLAIN}"
+    echo -e " b. IPv4 优先 (直连) + 仅 IPv6 走 WARP"
+    echo -e " c. 双栈全部走 WARP (完全隐身)"
+    read -p "请选择: " sub
     
-    # 3. 强制优化 DNS (确保环境纯净)
+    # 强制优化 DNS
     fix_dns_strict_v6
     
-    local TMP_CONF=$(mktemp)
-    
-    # 4. 构造规则组 (显式规则，防止被默认规则覆盖)
-    # Rule A: 选中节点的 OpenAI -> WARP (防风控)
-    # Rule B: 选中节点的 IPv4 -> WARP (脏IP处理)
-    # Rule C: 选中节点的 IPv6 -> Direct (显式直连，防止意外)
-    
-    local rules=$(jq -n --argjson tags "$tags_json" '[
-        {
-            "inbound": $tags,
-            "domain_suffix": ["openai.com", "ai.com", "chatgpt.com"],
-            "outbound": "WARP"
-        },
-        {
-            "inbound": $tags,
-            "ip_version": 4,
-            "outbound": "WARP"
-        },
-        {
-            "inbound": $tags,
-            "ip_version": 6,
-            "outbound": "direct"
-        }
-    ]')
+    local rules="[]"
+    case "$sub" in
+        a)
+            # IPv6 优先模式: OpenAI->Warp, v4->Warp, v6->Direct
+            rules=$(jq -n --argjson tags "$tags_json" '[
+                { "inbound": $tags, "domain_suffix": ["openai.com","ai.com","chatgpt.com"], "outbound": "WARP" },
+                { "inbound": $tags, "ip_version": 4, "outbound": "WARP" },
+                { "inbound": $tags, "ip_version": 6, "outbound": "direct" }
+            ]')
+            ;;
+        b)
+            # IPv4 优先模式: v6->Warp, v4->Direct
+            rules=$(jq -n --argjson tags "$tags_json" '[
+                { "inbound": $tags, "ip_version": 6, "outbound": "WARP" },
+                { "inbound": $tags, "ip_version": 4, "outbound": "direct" }
+            ]')
+            ;;
+        *)
+            # 双栈全接管
+            rules=$(jq -n --argjson tags "$tags_json" '[
+                { "inbound": $tags, "outbound": "WARP" }
+            ]')
+            ;;
+    esac
 
-    # 5. 清理旧 WARP 规则 (避免冲突)
+    echo -e "${YELLOW}正在应用策略...${PLAIN}"
+    local TMP_CONF=$(mktemp)
     jq 'del(.route.rules[] | select(.outbound == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
-    
-    # 6. 头部注入新规则
     jq --argjson new_rules "$rules" '.route.rules = $new_rules + .route.rules' "$CONFIG_FILE" > "$TMP_CONF"
     
     if [[ $? -eq 0 && -s "$TMP_CONF" ]]; then
         mv "$TMP_CONF" "$CONFIG_FILE"
         apply_routing_rule "$(get_anti_loop_rule)"
-        echo -e "${GREEN}策略已应用：选定节点实现 IPv6 优先 + IPv4 分流。${PLAIN}"
+        echo -e "${GREEN}多节点策略应用成功！${PLAIN}"
     else
         echo -e "${RED}策略应用失败。${PLAIN}"; rm "$TMP_CONF"
     fi
@@ -392,18 +381,12 @@ mode_ipv6_priority_global() {
     echo -e "${YELLOW}正在应用 IPv6 优先策略 (全局生效)...${PLAIN}"
     fix_dns_strict_v6
     local rules='[
-        {
-            "domain_suffix": ["openai.com", "ai.com", "chatgpt.com"],
-            "outbound": "WARP"
-        },
-        {
-            "ip_version": 4,
-            "outbound": "WARP"
-        }
+        { "domain_suffix": ["openai.com", "ai.com", "chatgpt.com"], "outbound": "WARP" },
+        { "ip_version": 4, "outbound": "WARP" }
     ]'
     apply_routing_rule "$rules"
     apply_routing_rule "$(get_anti_loop_rule)"
-    echo -e "${GREEN}完美策略已应用 (全局)：IPv6 DNS + IPv6 直连优先。${PLAIN}"
+    echo -e "${GREEN}全局策略已应用：IPv6直连 / IPv4 WARP。${PLAIN}"
 }
 
 uninstall_warp() {
@@ -422,7 +405,7 @@ show_menu() {
         local st="${RED}未配置${PLAIN}"
         if [[ -f "$CONFIG_FILE" ]]; then
             if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
-                st="${GREEN}已配置 (v4.5 Multi-Node)${PLAIN}"
+                st="${GREEN}已配置 (v4.7 Priority)${PLAIN}"
             fi
         fi
         echo -e "================ Native WARP 管理中心 (Sing-box 1.12+) ================"
@@ -430,10 +413,10 @@ show_menu() {
         echo -e "----------------------------------------------------"
         echo -e " 1. 配置 WARP 凭证 (自动/手动)"
         echo -e " 2. 查看当前凭证信息"
-        echo -e " 3. 模式一：智能流媒体分流 (仅特定域名)"
-        echo -e " 4. 模式二：全局接管 (所有流量走 WARP)"
-        echo -e " 5. 模式三：指定节点 - IPv6 优先 (推荐 / 双栈分流)"
-        echo -e " 6. 模式四：全局生效 - IPv6 优先 (适合单节点环境)"
+        echo -e " 3. 模式一：流媒体分流 (仅 Netflix/OpenAI 等)"
+        echo -e " 4. 模式二：全局接管 (含 a/b/c 策略)"
+        echo -e " 5. 模式三：指定节点接管 (支持 v4优先/v6优先/双栈) [强力推荐]"
+        echo -e " 6. 模式四：全局 IPv6 优先 (适合单节点环境)"
         echo -e " 7. 卸载 Native WARP"
         echo -e " 0. 返回上级菜单"
         read -p "请选择: " choice
@@ -442,7 +425,7 @@ show_menu() {
             2) cat "$CRED_FILE" 2>/dev/null; read -p "回车继续..." ;;
             3) mode_stream; read -p "回车继续..." ;;
             4) mode_global; read -p "回车继续..." ;;
-            5) mode_multinode_ipv6_priority; read -p "回车继续..." ;;
+            5) mode_flexible_node; read -p "回车继续..." ;;
             6) mode_ipv6_priority_global; read -p "回车继续..." ;;
             7) uninstall_warp; read -p "回车继续..." ;;
             0) exit 0 ;;
@@ -452,7 +435,7 @@ show_menu() {
 }
 
 auto_main() {
-    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署 (v4.5)...${PLAIN}"
+    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署 (v4.7)...${PLAIN}"
     check_dependencies
     if [[ -n "$WARP_PRIV_KEY" ]] && [[ -n "$WARP_IPV6" ]]; then
         save_credentials "$WARP_PRIV_KEY" "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=" "172.16.0.2/32" "$WARP_IPV6" "${WARP_RESERVED:-[0,0,0]}"
@@ -461,9 +444,8 @@ auto_main() {
         register_warp
     fi
 
-    # 自动化模式下如果指定了 inbound tags，自动应用 Mode 5
+    # 自动化模式下如果指定了 inbound tags，自动应用 IPv6 优先策略
     if [[ -n "$WARP_INBOUND_TAGS" ]]; then
-        # 构建 rules 并应用
         fix_dns_strict_v6
         local tags_json=$(echo "$WARP_INBOUND_TAGS" | jq -R 'split(",")')
         local rules=$(jq -n --argjson tags "$tags_json" '[
@@ -471,16 +453,14 @@ auto_main() {
             { "inbound": $tags, "ip_version": 4, "outbound": "WARP" },
             { "inbound": $tags, "ip_version": 6, "outbound": "direct" }
         ]')
-        # 清理旧规则并注入
         local TMP_CONF=$(mktemp)
         jq 'del(.route.rules[] | select(.outbound == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
         jq --argjson new_rules "$rules" '.route.rules = $new_rules + .route.rules' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
         apply_routing_rule "$(get_anti_loop_rule)"
-        echo -e "${GREEN}>>> [WARP-SB] 自动化多节点策略已应用。${PLAIN}"
+        echo -e "${GREEN}>>> [WARP-SB] 自动化多节点策略(v4优先)已应用。${PLAIN}"
         return
     fi
     
-    # 默认回退逻辑
     local rule=""
     case "$WARP_MODE_SELECT" in
         1) rule=$(jq -n '{ "ip_version": 4, "outbound": "WARP" }') ;;
@@ -489,7 +469,6 @@ auto_main() {
         6) mode_ipv6_priority_global; return ;; 
         *) rule=$(jq -n '{ "domain_suffix": ["netflix.com","openai.com","google.com","youtube.com"], "outbound": "WARP" }') ;;
     esac
-    
     if [[ -n "$rule" ]]; then apply_routing_rule "$rule"; fi
     apply_routing_rule "$(get_anti_loop_rule)"
     echo -e "${GREEN}>>> [WARP-SB] 自动化配置完成。${PLAIN}"
