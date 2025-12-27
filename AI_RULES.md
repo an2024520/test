@@ -18,9 +18,9 @@
 * **Systemd**: 服务以 `User=root` 身份运行，因此文件权限（日志、配置文件）**必须**设置为 `root:root`。
 * **IPv6 处理**: 在进行 JSON 注入（例如在 `jq` 中）时，**始终**要给 IPv6 地址加上双引号。
 * **jq 语法**: 使用健壮的初始化写法以防止 null 错误：
-    ```bash
-    jq '.endpoints = (.endpoints // [])'
-    ```
+	```bash
+	jq '.endpoints = (.endpoints // [])'
+	```
 
 ### 1.2 WARP 规范 (WARP Specifics)
 * **命名约定**: WireGuard endpoint 的标签 (tag) **必须** 为 `"WARP"`。
@@ -38,16 +38,16 @@
 * **核心功能**: 利用 ML-KEM-768 算法动态生成加密（Client）和解密（Server）所需的密钥对。
 * **密钥管理流程**:
     * 1.  **生成密钥**: 使用 xray 核心命令生成密钥信息：          
-    ```bash
-    xray vlessenc
-    ```
+	```bash
+	xray vlessenc
+	```
     * 2.  **解析输出 (关键)**:
           * `vlessenc` 命令（在 ML-KEM-768 模式下）输出的是包含 JSON 字段的文本，**不是** X25519 格式。
           * 提取逻辑**: 先定位包含 `Authentication: ML-KEM-768` 的段落。
           * 私钥** (服务端): 提取 `"decryption":` 字段后双引号内的字符串。
           * 公钥** (客户端): 提取 `"encryption":` 字段后双引号内的字符串。
           * 密钥提取脚本示例 (推荐写法):
-    ```bash
+	```bash
 		# 生成密钥
 		vlessenc_output=$(xray vlessenc)
 		# --- 提取 VLESS Encryption (ML-KEM-768) 密钥 ---
@@ -63,7 +63,7 @@
 		reality_private=$(echo "$reality_keys" | awk '/Private/{print $3}')
 		reality_public=$(echo "$reality_keys" | awk '/Public/{print $3}')
 		reality_shortid=$(openssl rand -hex 8)
-    ```
+	```
 
 * **服务端配置 (`config.json`)**:
     * 1.  **私钥注入**:  `inbounds[].settings`：
