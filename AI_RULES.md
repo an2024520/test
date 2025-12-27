@@ -36,7 +36,7 @@
 * **主要适用场景**: `VLESS + vlessEncryption+XHTTP + REALITY`
 * **最低版本**: v25.8.31+
 * **核心功能**: 利用 ML-KEM-768 算法动态生成加密（Client）和解密（Server）所需的密钥对。
-* **密钥管理流程:
+* **密钥管理流程**:
     * 1.  **生成密钥**: 使用 xray 核心命令生成密钥信息：          
     ```bash
     xray vlessenc
