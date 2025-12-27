@@ -1,4 +1,6 @@
 #!/bin/bash
+echo "4.0"
+sleep 5
 # ==============================================================================
 # Script Name: singbox_patch_warp_ipv6_priority.sh
 # Version: v4.9 (Crash Fix / Auto-Direct Inject)
