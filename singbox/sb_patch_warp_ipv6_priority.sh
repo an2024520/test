@@ -1,4 +1,6 @@
 #!/bin/bash
+echo "2.1"
+sleep 5
 # ==============================================================================
 # Script Name: singbox_patch_warp_ipv6_priority.sh
 # Version: v4.7 (Clear Priority Description)
