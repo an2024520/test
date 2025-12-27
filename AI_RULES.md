@@ -63,9 +63,9 @@
 		reality_shortid=$(openssl rand -hex 8)
     ```
 
-      * 3.  **服务端配置 (`config.json`)**:
+* **服务端配置 (`config.json`)**:
            将 **私钥** 注入到 `inbounds[].settings` 中：
-            ```json
+	```json
             {
            	"settings": {
             	   "decryption": "YOUR_PRIVATE_KEY_HERE"
@@ -109,7 +109,7 @@
                }
              ]
            }
-           ```json
+	```json
 
 
       4.  **客户端分享链接**:
