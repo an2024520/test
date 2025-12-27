@@ -26,6 +26,8 @@
 * **命名约定**: WireGuard endpoint 的标签 (tag) **必须** 为 `"WARP"`。
     * **严禁**使用 `warp-endpoint` 并将其关联到 `WARP` 出站（此操作会导致路由或握手失败）。
 
+### 1.3 待更新...
+
 ---
 
 ## 2. Xray-core 合规规范 (v25.12.8+)
@@ -117,6 +119,7 @@
     * 1.  **参数格式**: `encryption=MLKEM_ENCRYPTION_KEY`
     * 2.  **完整示例**: `vless://UUID@IP:PORT?encryption=MLKEM_ENCRYPTION_KEY&flow=xtls-rprx-vision&security=reality&sni=SNI_DOMAIN&fp=chrome&pbk=REALITY_PUBLIC_KEY&sid=SHORT_ID&type=xhttp&path=PATH_VALUE&mode=auto#NAME`
 
+### 2.2 待更新...
 
 
         
