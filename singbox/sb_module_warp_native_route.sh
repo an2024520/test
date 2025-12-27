@@ -21,9 +21,16 @@
 # ==============================================================================
 
 # ============================================================
-#  Sing-box Native WARP 管理模块 (v3.9 Final-Standard/Fix-v1.12)
+#  Sing-box Native WARP 管理模块 (v3.9 Final-Standard)
 #  - 适配: Sing-box v1.12+ Endpoint 架构
-#  - 修复: 彻底解决 Option 5 菜单解析失效问题
+#  - 修复: 彻底解决 detour 语法错误与字段名称过时问题
+#  - 策略: 默认使用域名连接 (engage.cloudflareclient.com)
+# ============================================================
+
+# ============================================================
+#  Sing-box Native WARP 管理模块 (v3.9 Final-Standard)
+#  - 适配: Sing-box v1.12+ Endpoint 架构
+#  - 修复: 彻底解决 detour 语法错误与字段名称过时问题
 #  - 策略: 默认使用域名连接 (engage.cloudflareclient.com)
 # ============================================================
 
@@ -205,7 +212,7 @@ write_warp_config() {
     # 初始化: 确保 endpoints 数组存在
     jq '.endpoints = (.endpoints // []) | .outbounds = (.outbounds // [])' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
 
-    # 清理旧配置: 移除所有 WARP 相关的 outbound 和 endpoint (Migrate WireGuard outbound to endpoint)
+    # 清理旧配置: 移除所有 WARP 相关的 outbound 和 endpoint
     jq 'del(.outbounds[] | select(.tag == "WARP" or .tag == "warp" or .type == "wireguard"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq 'del(.endpoints[] | select(.tag == "warp-endpoint" or .tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
 
@@ -281,7 +288,7 @@ manual_warp() {
 # ==========================================
 
 ensure_warp_exists() {
-    # 检查是否存在名为 WARP 的 endpoint (不查 outbound，因为 Sing-box v1.12+ 不再使用 outbound type wireguard)
+    # 检查是否存在名为 WARP 的 endpoint (不查 outbound，因为新版不再使用 outbound)
     if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
        return 0
     fi
@@ -302,7 +309,6 @@ apply_routing_rule() {
     jq 'del(.route.rules[] | select(.outbound == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     
     # 前置插入 (Prepend)
-    # [v1.12 注意] 虽然 WARP 是 Endpoint，但在 Route Rule 中仍然将其 Tag 作为 outbound 值引用。
     jq --argjson r "$rule_json" '.route.rules = [$r] + .route.rules' "$CONFIG_FILE" > "$TMP_CONF"
     if [[ $? -eq 0 && -s "$TMP_CONF" ]]; then
         mv "$TMP_CONF" "$CONFIG_FILE"
@@ -346,46 +352,14 @@ mode_global() {
 
 mode_specific_node() {
     ensure_warp_exists || return
-    
-    # 修复: 彻底重写节点解析逻辑，不再依赖 nl/awk (v1.12兼容修复)
-    # 使用 bash 数组安全读取 jq 输出
-    local tags=()
-    while IFS= read -r line; do
-        [[ -n "$line" ]] && tags+=("$line")
-    done < <(jq -r '.inbounds[]? | .tag' "$CONFIG_FILE")
-
-    if [[ ${#tags[@]} -eq 0 ]]; then
-        echo -e "${RED}错误: 未检测到任何 Inbound 节点，或配置文件格式有误。${PLAIN}"
-        return
-    fi
-
-    echo -e "${SKYBLUE}当前 Inbound 列表:${PLAIN}"
-    for i in "${!tags[@]}"; do
-        echo " $((i+1)). ${tags[$i]}"
-    done
-
-    read -p "输入节点序号 (空格分隔，例如 '1 3'): " selection
+    local node_list=$(jq -r '.inbounds[] | "\(.tag) | \(.type)"' "$CONFIG_FILE" | nl)
+    echo "$node_list"
+    read -p "输入节点序号 (空格分隔): " selection
     local tags_json="[]"
-    local selected_count=0
-
     for num in $selection; do
-        # 校验数字合法性
-        if [[ "$num" =~ ^[0-9]+$ ]] && (( num >= 1 && num <= ${#tags[@]} )); then
-            local idx=$((num-1))
-            local tag="${tags[$idx]}"
-            tags_json=$(echo "$tags_json" | jq --arg t "$tag" '. + [$t]')
-            ((selected_count++))
-        else
-            echo -e "${YELLOW}警告: 忽略无效序号 [$num]${PLAIN}"
-        fi
+        local tag=$(echo "$node_list" | sed -n "${num}p" | awk -F'|' '{print $1}' | awk '{print $2}')
+        [[ -n "$tag" ]] && tags_json=$(echo "$tags_json" | jq --arg t "$tag" '. + [$t]')
     done
-
-    if [[ "$selected_count" -eq 0 ]]; then
-        echo -e "${RED}未选择任何有效节点，操作取消。${PLAIN}"
-        return
-    fi
-
-    # [v1.12 兼容性说明]: "inbound" 匹配字段在 route rules 中依然有效 (deprecated 的是 inbound 内部字段)
     apply_routing_rule "$(jq -n --argjson ib "$tags_json" '{ "inbound": $ib, "outbound": "WARP" }')"
 }
 
@@ -422,7 +396,7 @@ show_menu() {
         echo -e " 2. 查看当前凭证信息"
         echo -e " 3. 模式一：智能流媒体分流"
         echo -e " 4. 模式二：全局接管"
-        echo -e " 5. 模式三：指定节点接管 (推荐/已修复)"
+        echo -e " 5. 模式三：指定节点接管 (推荐)"
         echo -e " 7. 卸载 Native WARP"
         echo -e " 0. 返回上级菜单"
         read -p "请选择: " choice
