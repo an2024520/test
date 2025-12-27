@@ -27,4 +27,4 @@ sb_hy2_acme.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/
 sb_module_warp_native_route.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/singbox/sb_module_warp_native_route.sh
 fix_ipv6_dual_core.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/ipv6_only/fix_ipv6_dual_core.sh
 sb_hy2_deploy.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/singbox/sb_hy2_deploy.sh
-xray_vless_xhttp_reality_ENC.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_vless_xhttp_reality_ENC.sh
+xray_vless_xhttp_reality_mlkem.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_vless_xhttp_reality_mlkem.sh
