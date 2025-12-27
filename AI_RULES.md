@@ -16,4 +16,4 @@
 
 ## 3. WARP Specifics
 * **Naming**: The WireGuard endpoint tag MUST be `"WARP"` (not `warp-endpoint` linked to a `WARP` outbound).
-* **Connection**: Prefer IPv4 IP (`162.159...`) over domain names to avoid DNS loops during `check`.
+
