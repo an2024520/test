@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box 节点部署: Hysteria 2 (智能全能版 v2.1)
+#  Sing-box 节点部署: Hysteria 2 (智能全能版 v2.2)
 #  - 架构: Sing-box Inbound 模式
 #  - 证书: 智能识别 (留空->自签 / 输入域名->ACME)
-#  - 兼容: 完美适配 WARP 分流与 node_del 清理
+#  - 升级: 适配 Auto Deploy 参数自动传递
 # ============================================================
 
 RED='\033[0;31m'
@@ -33,56 +33,77 @@ if [[ ! -f "$SB_BIN" ]]; then
     exit 1
 fi
 
-# 安装依赖
 if ! command -v jq &> /dev/null || ! command -v openssl &> /dev/null || ! command -v socat &> /dev/null; then
     echo -e "${YELLOW}正在安装必要依赖 (jq, openssl, socat)...${PLAIN}"
     apt update -y && apt install -y jq openssl socat
 fi
 
-# 初始化配置
 if [[ ! -f "$CONFIG_FILE" ]]; then
     mkdir -p "$CONFIG_DIR"
     echo '{"log":{"level":"info","timestamp":false},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"},{"type":"block","tag":"block"}],"route":{"rules":[]}}' > "$CONFIG_FILE"
 fi
 mkdir -p "$CERT_DIR"
 
-# --- 2. 交互式配置 ---
+# --- 2. 配置处理 (适配自动模式) ---
 
-# 2.1 域名选择 (分流核心)
-echo -e "${YELLOW}------------------------------------------------${PLAIN}"
-echo -e "请选择安装模式:"
-echo -e "1. ${GREEN}留空回车${PLAIN} -> 使用**自签证书** (无需域名，IP 直连)"
-echo -e "2. ${SKYBLUE}输入域名${PLAIN} -> 使用**真实证书** (ACME 自动申请，需提前解析)"
-echo -e "${YELLOW}------------------------------------------------${PLAIN}"
-read -p "请输入域名 (留空则自签): " DOMAIN_INPUT
-
-if [[ -z "$DOMAIN_INPUT" ]]; then
-    MODE="self"
-    DOMAIN="bing.com" # 伪装域名
-    echo -e "${GREEN}>>> 已选择: 自签证书模式 (Self-Signed)${PLAIN}"
-else
-    MODE="acme"
-    DOMAIN="$DOMAIN_INPUT"
-    echo -e "${GREEN}>>> 已选择: 域名证书模式 (ACME)${PLAIN}"
-fi
-
-# 2.2 端口选择
-if [[ "$MODE" == "acme" ]]; then
-    DEFAULT_PORT=443
-else
-    DEFAULT_PORT=10086
-fi
-
-while true; do
-    read -p "请输入 UDP 监听端口 (默认 $DEFAULT_PORT): " CUSTOM_PORT
-    [[ -z "$CUSTOM_PORT" ]] && PORT=$DEFAULT_PORT && break
-    if [[ "$CUSTOM_PORT" =~ ^[0-9]+$ ]] && [ "$CUSTOM_PORT" -le 65535 ]; then
-        PORT="$CUSTOM_PORT"
-        break
+# --- [修改处 Start] ---
+if [[ "$AUTO_SETUP" == "true" ]]; then
+    # 自动模式：直接从环境变量读取，不进行交互
+    if [[ -z "$DOMAIN_INPUT" ]]; then
+        MODE="self"
+        DOMAIN="bing.com"
+        echo -e "${GREEN}>>> [自动模式] 域名为空，使用自签模式 (Self-Signed)${PLAIN}"
     else
-        echo -e "${RED}无效端口。${PLAIN}"
+        MODE="acme"
+        DOMAIN="$DOMAIN_INPUT"
+        echo -e "${GREEN}>>> [自动模式] 使用域名证书模式 (ACME): $DOMAIN${PLAIN}"
     fi
-done
+
+    # 端口处理
+    if [[ -n "$PORT" ]]; then
+        echo -e "${GREEN}>>> [自动模式] 使用端口: $PORT${PLAIN}"
+    else
+        PORT=$([[ "$MODE" == "acme" ]] && echo 443 || echo 10086)
+        echo -e "${YELLOW}>>> [自动模式] 未指定端口，使用默认: $PORT${PLAIN}"
+    fi
+
+else
+    # 手动模式：保持原有交互逻辑
+    echo -e "${YELLOW}------------------------------------------------${PLAIN}"
+    echo -e "请选择安装模式:"
+    echo -e "1. ${GREEN}留空回车${PLAIN} -> 使用**自签证书** (无需域名，IP 直连)"
+    echo -e "2. ${SKYBLUE}输入域名${PLAIN} -> 使用**真实证书** (ACME 自动申请，需提前解析)"
+    echo -e "${YELLOW}------------------------------------------------${PLAIN}"
+    read -p "请输入域名 (留空则自签): " DOMAIN_INPUT
+
+    if [[ -z "$DOMAIN_INPUT" ]]; then
+        MODE="self"
+        DOMAIN="bing.com"
+        echo -e "${GREEN}>>> 已选择: 自签证书模式 (Self-Signed)${PLAIN}"
+    else
+        MODE="acme"
+        DOMAIN="$DOMAIN_INPUT"
+        echo -e "${GREEN}>>> 已选择: 域名证书模式 (ACME)${PLAIN}"
+    fi
+
+    if [[ "$MODE" == "acme" ]]; then
+        DEFAULT_PORT=443
+    else
+        DEFAULT_PORT=10086
+    fi
+
+    while true; do
+        read -p "请输入 UDP 监听端口 (默认 $DEFAULT_PORT): " CUSTOM_PORT
+        [[ -z "$CUSTOM_PORT" ]] && PORT=$DEFAULT_PORT && break
+        if [[ "$CUSTOM_PORT" =~ ^[0-9]+$ ]] && [ "$CUSTOM_PORT" -le 65535 ]; then
+            PORT="$CUSTOM_PORT"
+            break
+        else
+            echo -e "${RED}无效端口。${PLAIN}"
+        fi
+    done
+fi
+# --- [修改处 End] ---
 
 # 2.3 密码生成
 PASSWORD=$(openssl rand -hex 16)
@@ -108,7 +129,6 @@ elif [[ "$MODE" == "acme" ]]; then
     # === ACME 模式 ===
     echo -e "${YELLOW}正在使用 acme.sh 申请证书...${PLAIN}"
     
-    # 80 端口检查与临时释放
     WEB_STOPPED=""
     if lsof -i :80 | grep -q "LISTEN"; then
         echo -e "${YELLOW}检测到 80 端口占用，尝试临时停止 Web 服务...${PLAIN}"
@@ -116,13 +136,11 @@ elif [[ "$MODE" == "acme" ]]; then
         if systemctl is-active --quiet apache2; then systemctl stop apache2; WEB_STOPPED="apache2"; fi
     fi
 
-    # 安装 acme.sh
     if ! command -v ~/.acme.sh/acme.sh &> /dev/null; then
         curl https://get.acme.sh | sh -s email="hy2@${DOMAIN}"
     fi
     ACME_BIN=~/.acme.sh/acme.sh
 
-    # 申请与安装
     $ACME_BIN --issue -d "$DOMAIN" --standalone --force
     if [[ $? -ne 0 ]]; then
         echo -e "${RED}证书申请失败！请检查域名解析或防火墙。${PLAIN}"
@@ -138,7 +156,6 @@ elif [[ "$MODE" == "acme" ]]; then
         --fullchain-file "$CERT_PATH" \
         --reloadcmd     "systemctl restart sing-box"
     
-    # 恢复 Web 服务
     [[ -n "$WEB_STOPPED" ]] && systemctl start "$WEB_STOPPED"
         
     INSECURE_BOOL="false"
@@ -150,13 +167,11 @@ fi
 NODE_TAG="Hy2-${PORT}"
 [[ "$MODE" == "acme" ]] && NODE_TAG="Hy2-${DOMAIN}"
 
-# 清理冲突 (同端口或同Tag)
 tmp0=$(mktemp)
 jq --argjson port "$PORT" --arg tag "$NODE_TAG" \
    'del(.inbounds[]? | select(.listen_port == $port or .tag == $tag))' \
    "$CONFIG_FILE" > "$tmp0" && mv "$tmp0" "$CONFIG_FILE"
 
-# 构建 JSON
 NODE_JSON=$(jq -n \
     --arg port "$PORT" \
     --arg tag "$NODE_TAG" \
@@ -184,7 +199,6 @@ NODE_JSON=$(jq -n \
 tmp=$(mktemp)
 jq --argjson new_node "$NODE_JSON" 'if .inbounds == null then .inbounds = [] else . end | .inbounds += [$new_node]' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
 
-# 写入 Meta (方便管理脚本读取)
 if [[ ! -f "$META_FILE" ]]; then echo "{}" > "$META_FILE"; fi
 tmp_meta=$(mktemp)
 jq --arg tag "$NODE_TAG" --arg type "hy2-$MODE" \
