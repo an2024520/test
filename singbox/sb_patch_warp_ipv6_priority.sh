@@ -1,17 +1,12 @@
 #!/bin/bash
-echo "v1.0"
-sleep 5
 # ==============================================================================
 # Script Name: singbox_patch_warp_ipv6_priority.sh
-# Version: v4.0 (IPv6-Priority Patch)
-# Based on: sb_module_warp_native_route.sh (v3.9)
+# Version: v4.2 (Strict v1.12+ Standard)
 # 
-# New Feature:
-#   [Mode 6] IPv6 Priority Strategy for Dual-Stack VPS with Dirty IPv4
-#   - DNS Strategy: Force "prefer_ipv6"
-#   - Rule 1: OpenAI -> WARP
-#   - Rule 2: IPv4 -> WARP
-#   - Default: IPv6 -> Direct (Native)
+# Update Log:
+#   v4.2: Fix "legacy DNS" & "missing domain_resolver" warnings for Sing-box 1.12+
+#   v4.1: Auto-injection for missing DNS module.
+#   v4.0: Added Mode 6 for IPv6-Priority strategy.
 # ==============================================================================
 
 RED='\033[0;31m'
@@ -63,7 +58,7 @@ ensure_python() {
 check_env() {
     echo -e "${YELLOW}正在执行网络环境检测...${PLAIN}"
     
-    # [标准] 默认使用域名，符合通用做法
+    # [标准] 默认使用域名
     FINAL_EP_ADDR="engage.cloudflareclient.com"
     FINAL_EP_PORT=2408
 
@@ -90,7 +85,6 @@ restart_sb() {
     echo -e "${YELLOW}重启 Sing-box 服务...${PLAIN}"
     
     if command -v sing-box &> /dev/null; then
-        # 语法校验失败时输出具体错误
         if ! sing-box check -c "$CONFIG_FILE"; then
              echo -e "${RED}配置语法校验失败！正在回滚...${PLAIN}"
              [[ -f "${CONFIG_FILE}.bak" ]] && cp "${CONFIG_FILE}.bak" "$CONFIG_FILE"
@@ -143,7 +137,6 @@ EOF
 write_warp_config() {
     local priv="$1" pub="$2" v4="$3" v6="$4" res="$5"
     
-    # 确保基础配置文件存在
     if [[ ! -f "$CONFIG_FILE" ]]; then
         mkdir -p "$(dirname "$CONFIG_FILE")"
         echo "{}" > "$CONFIG_FILE"
@@ -158,7 +151,7 @@ write_warp_config() {
     
     check_env
 
-    # 1. 生成 Endpoint 
+    # 生成 Endpoint 
     local endpoint_json=$(jq -n \
         --arg priv "$priv" \
         --arg pub "$pub" \
@@ -341,44 +334,43 @@ mode_specific_node() {
     apply_routing_rule "$(jq -n --argjson ib "$tags_json" '{ "inbound": $ib, "outbound": "WARP" }')"
 }
 
-# [NEW] 模式四：IPv6 优先 (IPv4 脏环境专用)
-# [Fixed] 模式四：IPv6 优先 (自动补全 DNS 版)
+# [v4.2 Fixed] 模式四：IPv6 优先 (强制 1.12+ 标准 DNS)
 mode_ipv6_priority() {
     ensure_warp_exists || return
-    echo -e "${YELLOW}正在应用 IPv6 优先策略 (适用于 IPv4 脏 IP 环境)...${PLAIN}"
+    echo -e "${YELLOW}正在应用 IPv6 优先策略 (消除 1.12+ 警告)...${PLAIN}"
     
     local TMP_CONF=$(mktemp)
     
     # -----------------------------------------------------------
-    # 1. DNS 策略强制修正 (修复 "未检测到 DNS 模块" 问题)
+    # 1. 重构 DNS 模块 (Strict v1.12+)
+    #    - 移除 'rules': [{"outbound":...}] (已废弃)
+    #    - 使用 'final': "google" 指定默认
+    #    - 强制 "strategy": "prefer_ipv6"
     # -----------------------------------------------------------
-    echo -e "${YELLOW}>>> 正在检查 DNS 配置...${PLAIN}"
+    echo -e "${YELLOW}>>> 正在重置为现代化 DNS 配置...${PLAIN}"
     
     # 定义标准 DNS 模板 (Sing-box v1.12+ 格式)
-    # 如果用户完全没有 DNS，使用此模板初始化
-    local default_dns='{
+    local clean_dns='{
         "servers": [
             {"tag": "google", "address": "8.8.8.8", "detour": "direct"},
             {"tag": "local", "address": "local", "detour": "direct"}
         ],
-        "rules": [
-            {"outbound": "any", "server": "local"}
-        ],
+        "rules": [],
+        "final": "google",
         "strategy": "prefer_ipv6"
     }'
 
-    if ! jq -e '.dns' "$CONFIG_FILE" >/dev/null 2>&1; then
-        echo -e "${SKYBLUE}提示: 检测到 DNS 模块缺失，正在初始化标准 DNS...${PLAIN}"
-        # 注入完整的 DNS 模块
-        jq --argjson dns "$default_dns" '.dns = $dns' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
-    else
-        echo -e "${GREEN}提示: 检测到现有 DNS，正在强制修改策略...${PLAIN}"
-        # 仅修改策略，保留用户原有的 Server 配置
-        jq '.dns.strategy = "prefer_ipv6"' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
-    fi
+    # 强制覆盖旧 DNS 模块
+    jq --argjson dns "$clean_dns" '.dns = $dns' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
+    
+    # -----------------------------------------------------------
+    # 2. 修复 Route 模块 (Missing default_domain_resolver)
+    # -----------------------------------------------------------
+    echo -e "${YELLOW}>>> 修复 default_domain_resolver 字段...${PLAIN}"
+    jq '.route.default_domain_resolver = "google"' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
 
     # -----------------------------------------------------------
-    # 2. 路由规则注入 (同原逻辑)
+    # 3. 路由规则注入
     # -----------------------------------------------------------
     local rules='[
         {
@@ -400,7 +392,7 @@ mode_ipv6_priority() {
     if [[ $? -eq 0 && -s "$TMP_CONF" ]]; then
         mv "$TMP_CONF" "$CONFIG_FILE"
         apply_routing_rule "$(get_anti_loop_rule)"
-        echo -e "${GREEN}策略已应用：DNS(Prefer IPv6) + IPv6 直连 + IPv4/OpenAI 走 WARP。${PLAIN}"
+        echo -e "${GREEN}现代化策略已应用：无警告模式 + IPv6 直连优先。${PLAIN}"
     else
         echo -e "${RED}策略应用失败。${PLAIN}"; rm "$TMP_CONF"
     fi
@@ -428,7 +420,7 @@ show_menu() {
         local st="${RED}未配置${PLAIN}"
         if [[ -f "$CONFIG_FILE" ]]; then
             if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
-                st="${GREEN}已配置 (v4.0 Patched)${PLAIN}"
+                st="${GREEN}已配置 (v4.2 Clean)${PLAIN}"
             fi
         fi
         echo -e "================ Native WARP 管理中心 (Sing-box 1.12+) ================"
@@ -439,7 +431,7 @@ show_menu() {
         echo -e " 3. 模式一：智能流媒体分流"
         echo -e " 4. 模式二：全局接管"
         echo -e " 5. 模式三：指定节点接管"
-        echo -e " 6. 模式四：IPv6 优先 (IPv4 脏环境专用) [推荐]"
+        echo -e " 6. 模式四：IPv6 优先 (消除 1.12+ 警告) [推荐]"
         echo -e " 7. 卸载 Native WARP"
         echo -e " 0. 返回上级菜单"
         read -p "请选择: " choice
@@ -458,7 +450,7 @@ show_menu() {
 }
 
 auto_main() {
-    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署 (v4.0)...${PLAIN}"
+    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署 (v4.2)...${PLAIN}"
     check_dependencies
     if [[ -n "$WARP_PRIV_KEY" ]] && [[ -n "$WARP_IPV6" ]]; then
         save_credentials "$WARP_PRIV_KEY" "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=" "172.16.0.2/32" "$WARP_IPV6" "${WARP_RESERVED:-[0,0,0]}"
