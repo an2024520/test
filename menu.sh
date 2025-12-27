@@ -223,7 +223,7 @@ menu_xray() {
         echo -e " ${GREEN}5.${PLAIN} VLESS-WS-Tunnel      ${GRAY}[$FILE_ADD_TUNNEL]${PLAIN}"
         echo -e " ${GREEN}6.${PLAIN} VLESS-XHTTP-Reality  ${GRAY}[$FILE_ADD_XHTTP]${PLAIN}"
         # [新增] 选项 7
-        echo -e " ${GREEN}7.${PLAIN} VLESS-ENC-MLKEM      ${GRAY}[$FILE_ADD_MLKEM]${PLAIN}"
+        echo -e " ${GREEN}7.${PLAIN} VLESS-XHTTP-Reality-ENC      ${GRAY}[$FILE_ADD_MLKEM]${PLAIN}"
         echo -e " ----------------------------------------"
         echo -e " ${GRAY}[路由与维护]${PLAIN}"
         # [调整] 序号顺延 7->8, 8->9, 9->10
