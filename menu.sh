@@ -5,6 +5,7 @@
 #  - 架构: Xray / Sing-box / Hy2 / Tools 纵向分流
 #  - 升级: Sing-box 模块适配 Hysteria 2 智能部署脚本
 #  - 纯净: 移除内置代理，适配用户自定义 Worker 环境
+#  - 新增: 适配 Xray v25+ ML-KEM 抗量子加密模块
 # ============================================================
 
 # 颜色定义
@@ -88,6 +89,9 @@ FILE_ADD_XHTTP="xray_vless_xhttp_reality.sh"
 FILE_ADD_VISION="xray_vless_vision_reality.sh"
 FILE_ADD_WS="xray_vless_ws_tls.sh"
 FILE_ADD_TUNNEL="xray_vless_ws_tunnel.sh"
+# [新增] ML-KEM 模块
+FILE_ADD_MLKEM="xray_vless_xhttp_reality_mlkem.sh"
+
 FILE_XRAY_WARP="xray_module_warp_native_route.sh"
 FILE_XRAY_INFO="xray_get_node_details.sh"
 FILE_XRAY_DEL="xray_module_node_del.sh"
@@ -98,10 +102,8 @@ FILE_SB_ADD_ANYTLS="sb_anytls_reality.sh"
 FILE_SB_ADD_VISION="sb_vless_vision_reality.sh"
 FILE_SB_ADD_WS="sb_vless_ws_tls.sh"
 FILE_SB_ADD_TUNNEL="sb_vless_ws_tunnel.sh"
-# --- [修改点 Start] ---
-# 将原有的 SELF/ACME 两个脚本变量替换为单一的智能部署脚本变量
 FILE_SB_ADD_HY2="sb_hy2_deploy.sh"
-# --- [修改点 End] ---
+
 FILE_SB_WARP="sb_module_warp_native_route.sh"
 FILE_SB_INFO="sb_get_node_details.sh"
 FILE_SB_DEL="sb_module_node_del.sh"
@@ -220,11 +222,14 @@ menu_xray() {
         echo -e " ${GREEN}4.${PLAIN} VLESS-WS-TLS (CDN)   ${GRAY}[$FILE_ADD_WS]${PLAIN}"
         echo -e " ${GREEN}5.${PLAIN} VLESS-WS-Tunnel      ${GRAY}[$FILE_ADD_TUNNEL]${PLAIN}"
         echo -e " ${GREEN}6.${PLAIN} VLESS-XHTTP-Reality  ${GRAY}[$FILE_ADD_XHTTP]${PLAIN}"
+        # [新增] 选项 7
+        echo -e " ${GREEN}7.${PLAIN} VLESS-ENC-MLKEM      ${GRAY}[$FILE_ADD_MLKEM]${PLAIN}"
         echo -e " ----------------------------------------"
         echo -e " ${GRAY}[路由与维护]${PLAIN}"
-        echo -e " ${SKYBLUE}7.${PLAIN} Native WARP (接管)   ${GRAY}[$FILE_XRAY_WARP]${PLAIN}"
-        echo -e " ${SKYBLUE}8.${PLAIN} 查看节点链接         ${GRAY}[$FILE_XRAY_INFO]${PLAIN}"
-        echo -e " ${SKYBLUE}9.${PLAIN} 删除指定节点         ${GRAY}[$FILE_XRAY_DEL]${PLAIN}"
+        # [调整] 序号顺延 7->8, 8->9, 9->10
+        echo -e " ${SKYBLUE}8.${PLAIN} Native WARP (接管)   ${GRAY}[$FILE_XRAY_WARP]${PLAIN}"
+        echo -e " ${SKYBLUE}9.${PLAIN} 查看节点链接         ${GRAY}[$FILE_XRAY_INFO]${PLAIN}"
+        echo -e " ${SKYBLUE}10.${PLAIN} 删除指定节点        ${GRAY}[$FILE_XRAY_DEL]${PLAIN}"
         echo -e " ----------------------------------------"
         echo -e " ${GRAY}0. 返回主菜单${PLAIN}"
         read -p "请选择: " choice
@@ -232,8 +237,11 @@ menu_xray() {
             1) check_run "$FILE_XRAY_CORE" ;; 2) check_run "$FILE_XRAY_UNINSTALL" ;;
             3) check_run "$FILE_ADD_VISION" ;; 4) check_run "$FILE_ADD_WS" ;;
             5) check_run "$FILE_ADD_TUNNEL" ;; 6) check_run "$FILE_ADD_XHTTP" ;;
-            7) check_run "$FILE_XRAY_WARP" "true" ;; 
-            8) check_run "$FILE_XRAY_INFO" ;; 9) check_run "$FILE_XRAY_DEL" ;;
+            # [新增] 选项 7 执行
+            7) check_run "$FILE_ADD_MLKEM" ;;
+            # [调整] 序号顺延执行
+            8) check_run "$FILE_XRAY_WARP" "true" ;; 
+            9) check_run "$FILE_XRAY_INFO" ;; 10) check_run "$FILE_XRAY_DEL" ;;
             0) return ;; *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
     done
@@ -252,17 +260,12 @@ menu_singbox() {
         echo -e " ${GREEN}4.${PLAIN} VLESS-Vision-Reality ${GRAY}[$FILE_SB_ADD_VISION]${PLAIN}"
         echo -e " ${GREEN}5.${PLAIN} VLESS-WS-TLS         ${GRAY}[$FILE_SB_ADD_WS]${PLAIN}"
         echo -e " ${GREEN}6.${PLAIN} VLESS-WS-Tunnel      ${GRAY}[$FILE_SB_ADD_TUNNEL]${PLAIN}"
-        
-        # --- [修改点 Start] ---
-        # 合并选项 7 & 8 为 "智能部署"，并调用新脚本
         echo -e " ${GREEN}7.${PLAIN} Hysteria2 (智能部署) ${GRAY}[$FILE_SB_ADD_HY2]${PLAIN}"
         echo -e " ----------------------------------------"
         echo -e " ${GRAY}[路由与维护]${PLAIN}"
-        # 后续选项序号前移 (原9-11 -> 现8-10)
         echo -e " ${SKYBLUE}8.${PLAIN} Native WARP (接管)   ${GRAY}[$FILE_SB_WARP]${PLAIN}"
         echo -e " ${SKYBLUE}9.${PLAIN} 查看节点链接        ${GRAY}[$FILE_SB_INFO]${PLAIN}"
         echo -e " ${SKYBLUE}10.${PLAIN} 删除指定节点        ${GRAY}[$FILE_SB_DEL]${PLAIN}"
-        # --- [修改点 End] ---
         
         echo -e " ----------------------------------------"
         echo -e " ${GRAY}0. 返回主菜单${PLAIN}"
@@ -271,14 +274,9 @@ menu_singbox() {
             1) check_run "$FILE_SB_CORE" ;; 2) check_run "$FILE_SB_UNINSTALL" ;;
             3) check_run "$FILE_SB_ADD_ANYTLS" ;; 4) check_run "$FILE_SB_ADD_VISION" ;;
             5) check_run "$FILE_SB_ADD_WS" ;; 6) check_run "$FILE_SB_ADD_TUNNEL" ;;
-            
-            # --- [修改点 Start] ---
-            # 选项 7 调用智能脚本，后续选项逻辑顺延
             7) check_run "$FILE_SB_ADD_HY2" ;; 
             8) check_run "$FILE_SB_WARP" "true" ;; 
             9) check_run "$FILE_SB_INFO" ;; 10) check_run "$FILE_SB_DEL" ;;
-            # --- [修改点 End] ---
-            
             0) return ;; *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
     done
@@ -318,7 +316,6 @@ show_main_menu() {
         echo -e "--------------------------------------------"
         echo -e " ${SKYBLUE}1.${PLAIN} XRAY 核心系列      ${GRAY}(Xray Core Series)${PLAIN}"
         echo -e " ${SKYBLUE}2.${PLAIN} SINGBOX 核心系列   ${GRAY}(Sing-box Core Series)${PLAIN}"
-        # 保持原样：3号选项继续调用 hy2.sh，因为它是全能面板
         echo -e " ${SKYBLUE}3.${PLAIN} 独立 HY2 协议      ${GRAY}[$FILE_HY2]${PLAIN}"
         echo -e " ${SKYBLUE}4.${PLAIN} 系统优化工具       ${GRAY}(System Tools)${PLAIN}"
         echo -e "--------------------------------------------"
