@@ -3,7 +3,7 @@ echo "v3.81"
 sleep 5
 # ============================================================
 #  Sing-box 分流策略管理器 (v3.8 BugFix + 自带 WARP 手动配置)
-#  - 核心功能: 实现 "IPv6优先直连，IPv4兜底WARP" 或 "双栈WARP接管"
+#  - 核心功能: 实现 "原生IPv6优先直连，IPv4兜底WARP" 或 "双栈WARP接管"
 #  - 新增: 自带手动输入 WARP 凭证 + 自动注入 Endpoint + 凭证持久化
 #  - 自动化: 自动将选中节点的 domain_strategy 修改为 prefer_ipv6
 #  - 修复: 节点选择时包含序号的 Bug
