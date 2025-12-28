@@ -21,10 +21,10 @@
 # ==============================================================================
 
 # ============================================================
-#  Sing-box Native WARP 管理模块 (v4.2 Ultimate - Final Polish)
+#  Sing-box Native WARP 管理模块 (v4.1 Ultimate)
 #  - 架构: Endpoint (v1.12+)
-#  - 核心: Systemd/Pkill 双模兼容 + 自动回滚保护
-#  - 策略: 2025 全面流媒体规则 (Netflix/Disney+/HBO/Paramount+/Spotify)
+#  - 核心: 恢复 restart_sb 完整兼容性 (Systemd + Pkill)
+#  - 策略: 2025 流媒体规则集 + 自动回滚保护
 # ============================================================
 
 RED='\033[0;31m'
@@ -72,8 +72,32 @@ ensure_python() {
     fi
 }
 
-# --- 核心重启逻辑 (验证 + 回滚 + 兼容性) ---
+# --- 环境检测与 Endpoint 适配 ---
+check_env() {
+    echo -e "${YELLOW}正在执行网络环境检测...${PLAIN}"
+    
+    # [标准] 默认使用域名
+    FINAL_EP_ADDR="engage.cloudflareclient.com"
+    FINAL_EP_PORT=2408
+
+    # 简单的 IPv4 连通性测试
+    local ipv4_check=$(curl -4 -s -m 3 http://ip.sb 2>/dev/null)
+    
+    if [[ "$ipv4_check" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo -e "${GREEN}>>> 检测到有效 IPv4 环境。${PLAIN}"
+    else
+        # IPv6-Only 环境切换为官方 IPv6 Endpoint IP
+        FINAL_EP_ADDR="2606:4700:d0::a29f:c001"
+        echo -e "${SKYBLUE}>>> 检测到纯 IPv6 环境，切换为专用 Endpoint: ${FINAL_EP_ADDR}${PLAIN}"
+    fi
+    
+    export FINAL_EP_ADDR
+    export FINAL_EP_PORT
+}
+
+# --- 核心重启逻辑 (v3.9 经典回归版: 验证 + 回滚 + 兼容性) ---
 restart_sb() {
+    # 确保日志权限
     mkdir -p /var/log/sing-box/
     chown -R root:root /var/log/sing-box/ >/dev/null 2>&1
     
@@ -93,6 +117,7 @@ restart_sb() {
         systemctl restart sing-box
     else
         pkill -xf "sing-box run -c $CONFIG_FILE"
+        # 稍微等待进程释放
         sleep 1
         nohup sing-box run -c "$CONFIG_FILE" > /var/log/sing-box/run.log 2>&1 &
     fi
@@ -105,28 +130,8 @@ restart_sb() {
     fi
 }
 
-# --- 环境检测与 Endpoint 适配 ---
-check_env() {
-    echo -e "${YELLOW}正在执行网络环境检测...${PLAIN}"
-    
-    FINAL_EP_ADDR="engage.cloudflareclient.com"
-    FINAL_EP_PORT=2408
-
-    local ipv4_check=$(curl -4 -s -m 3 http://ip.sb 2>/dev/null)
-    
-    if [[ "$ipv4_check" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        echo -e "${GREEN}>>> 检测到有效 IPv4 环境。${PLAIN}"
-    else
-        FINAL_EP_ADDR="2606:4700:d0::a29f:c001"
-        echo -e "${SKYBLUE}>>> 检测到纯 IPv6 环境，切换为专用 Endpoint: ${FINAL_EP_ADDR}${PLAIN}"
-    fi
-    
-    export FINAL_EP_ADDR
-    export FINAL_EP_PORT
-}
-
 # ==========================================
-# 2. WARP 配置核心函数
+# 2. 核心功能函数
 # ==========================================
 
 clean_reserved() {
@@ -156,6 +161,7 @@ EOF
 write_warp_config() {
     local priv="$1" pub="$2" v4="$3" v6="$4" res="$5"
     
+    # 确保基础配置文件存在
     if [[ ! -f "$CONFIG_FILE" ]]; then
         mkdir -p "$(dirname "$CONFIG_FILE")"
         echo "{}" > "$CONFIG_FILE"
@@ -170,6 +176,7 @@ write_warp_config() {
     
     check_env
 
+    # 1. 生成 Endpoint 
     local endpoint_json=$(jq -n \
         --arg priv "$priv" \
         --arg pub "$pub" \
@@ -194,13 +201,18 @@ write_warp_config() {
             ] 
         }')
 
-    echo -e "${YELLOW}正在应用 v4.2 Endpoint 架构配置...${PLAIN}"
+    echo -e "${YELLOW}正在应用 v4.1 Endpoint 架构配置...${PLAIN}"
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
     local TMP_CONF=$(mktemp)
     
+    # 初始化: 确保 endpoints 数组存在
     jq '.endpoints = (.endpoints // []) | .outbounds = (.outbounds // [])' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
+
+    # 清理旧配置: 移除所有 WARP 相关的 outbound 和 endpoint
     jq 'del(.outbounds[] | select(.tag == "WARP" or .tag == "warp" or .type == "wireguard"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq 'del(.endpoints[] | select(.tag == "warp-endpoint" or .tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
+
+    # 注入 Endpoint (直接进入 endpoints 数组)
     jq --argjson ep "$endpoint_json" '.endpoints += [$ep]' "$CONFIG_FILE" > "$TMP_CONF"
     
     if [[ $? -eq 0 && -s "$TMP_CONF" ]]; then
@@ -275,6 +287,7 @@ ensure_warp_exists() {
     if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
        return 0
     fi
+    
     if [[ -f "$CRED_FILE" ]]; then
         read -p "未发现配置但存在凭证，是否恢复？[y/n]: " r
         [[ "$r" == "y" ]] && { source "$CRED_FILE"; write_warp_config "$PRIV_KEY" "$PUB_KEY" "$V4_ADDR" "$V6_ADDR" "$RESERVED"; return 0; }
@@ -287,7 +300,10 @@ apply_routing_rule() {
     echo -e "${YELLOW}正在应用路由规则...${PLAIN}"
     local TMP_CONF=$(mktemp)
     
-    cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
+    # 清空旧规则
+    jq 'del(.route.rules[] | select(.outbound == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
+    
+    # 前置插入 (Prepend)
     jq --argjson r "$rule_json" '.route.rules = [$r] + .route.rules' "$CONFIG_FILE" > "$TMP_CONF"
     if [[ $? -eq 0 && -s "$TMP_CONF" ]]; then
         mv "$TMP_CONF" "$CONFIG_FILE"
@@ -308,19 +324,20 @@ get_anti_loop_rule() {
 
 mode_stream() {
     ensure_warp_exists || return
-    # 2025 Revised: 纯域名规则 (修复了 Spotify URL 错误) + HBO/Paramount
+    # 注意: spotify.com 等 URL 无法作为 domain_suffix 匹配
+    # 已修正为纯域名 googleusercontent.com (包含前者) 以通过 sing-box check
     apply_routing_rule "$(jq -n '{
         "domain_suffix": [
             "netflix.com","nflxvideo.net","netflix.net",
             "openai.com","chatgpt.com","ai.com",
             "google.com","youtube.com","youtu.be",
             "disneyplus.com","hulu.com",
-            "hbonow.com","hbomax.com","paramountplus.com",
-            "googleusercontent.com","spotifycdn.com","scdn.co","pscp.tv"
+            "googleusercontent.com",
+            "spotifycdn.com","scdn.co","pscp.tv"
         ], 
         "outbound": "WARP" 
     }')"
-    echo -e "${GREEN}流媒体分流策略已应用 (2025 Final)。${PLAIN}"
+    echo -e "${GREEN}流媒体分流策略已应用 (2025 Revised)。${PLAIN}"
 }
 
 mode_global() {
@@ -385,7 +402,7 @@ show_menu() {
         local st="${RED}未配置${PLAIN}"
         if [[ -f "$CONFIG_FILE" ]]; then
             if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
-                st="${GREEN}已配置 (v4.2 Ultimate)${PLAIN}"
+                st="${GREEN}已配置 (v4.1 Ultimate)${PLAIN}"
             fi
         fi
         echo -e "================ Native WARP 管理中心 (Sing-box 1.12+) ================"
@@ -413,7 +430,7 @@ show_menu() {
 }
 
 auto_main() {
-    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署 (v4.2)...${PLAIN}"
+    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署 (v4.1)...${PLAIN}"
     check_dependencies
     if [[ -n "$WARP_PRIV_KEY" ]] && [[ -n "$WARP_IPV6" ]]; then
         save_credentials "$WARP_PRIV_KEY" "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=" "172.16.0.2/32" "$WARP_IPV6" "${WARP_RESERVED:-[0,0,0]}"
@@ -431,11 +448,10 @@ auto_main() {
         *) rule=$(jq -n '{
                 "domain_suffix": [
                     "netflix.com","nflxvideo.net","netflix.net",
-                    "openai.com","chatgpt.com","ai.com",
+                    "openai.com","chatgpt.com",
                     "google.com","youtube.com","youtu.be",
                     "disneyplus.com","hulu.com",
-                    "hbonow.com","hbomax.com","paramountplus.com",
-                    "googleusercontent.com","spotifycdn.com","scdn.co","pscp.tv"
+                    "googleusercontent.com","spotifycdn.com","pscp.tv"
                 ],
                 "outbound": "WARP"
             }') ;;

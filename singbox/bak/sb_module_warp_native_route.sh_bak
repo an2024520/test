@@ -21,10 +21,17 @@
 # ==============================================================================
 
 # ============================================================
-#  Sing-box Native WARP 管理模块 (v4.2 Ultimate - Final Polish)
-#  - 架构: Endpoint (v1.12+)
-#  - 核心: Systemd/Pkill 双模兼容 + 自动回滚保护
-#  - 策略: 2025 全面流媒体规则 (Netflix/Disney+/HBO/Paramount+/Spotify)
+#  Sing-box Native WARP 管理模块 (v3.9 Final-Standard)
+#  - 适配: Sing-box v1.12+ Endpoint 架构
+#  - 修复: 彻底解决 detour 语法错误与字段名称过时问题
+#  - 策略: 默认使用域名连接 (engage.cloudflareclient.com)
+# ============================================================
+
+# ============================================================
+#  Sing-box Native WARP 管理模块 (v3.9 Final-Standard)
+#  - 适配: Sing-box v1.12+ Endpoint 架构
+#  - 修复: 彻底解决 detour 语法错误与字段名称过时问题
+#  - 策略: 默认使用域名连接 (engage.cloudflareclient.com)
 # ============================================================
 
 RED='\033[0;31m'
@@ -72,51 +79,21 @@ ensure_python() {
     fi
 }
 
-# --- 核心重启逻辑 (验证 + 回滚 + 兼容性) ---
-restart_sb() {
-    mkdir -p /var/log/sing-box/
-    chown -R root:root /var/log/sing-box/ >/dev/null 2>&1
-    
-    echo -e "${YELLOW}重启 Sing-box 服务...${PLAIN}"
-    
-    if command -v sing-box &> /dev/null; then
-        # 1. 语法校验 (Check)
-        if ! sing-box check -c "$CONFIG_FILE"; then
-             echo -e "${RED}配置语法校验失败！正在回滚...${PLAIN}"
-             [[ -f "${CONFIG_FILE}.bak" ]] && cp "${CONFIG_FILE}.bak" "$CONFIG_FILE"
-             return 1
-        fi
-    fi
-
-    # 2. 双模启动 (Systemd / Pkill)
-    if systemctl list-unit-files | grep -q sing-box; then
-        systemctl restart sing-box
-    else
-        pkill -xf "sing-box run -c $CONFIG_FILE"
-        sleep 1
-        nohup sing-box run -c "$CONFIG_FILE" > /var/log/sing-box/run.log 2>&1 &
-    fi
-    
-    sleep 2
-    if systemctl is-active --quiet sing-box || pgrep -x "sing-box" >/dev/null; then
-        echo -e "${GREEN}服务重启成功。${PLAIN}"
-    else
-        echo -e "${RED}服务重启失败！请检查日志。${PLAIN}"
-    fi
-}
-
 # --- 环境检测与 Endpoint 适配 ---
 check_env() {
     echo -e "${YELLOW}正在执行网络环境检测...${PLAIN}"
     
+    # [标准] 默认使用域名，符合通用做法
     FINAL_EP_ADDR="engage.cloudflareclient.com"
     FINAL_EP_PORT=2408
 
+    # 简单的 IPv4 连通性测试
     local ipv4_check=$(curl -4 -s -m 3 http://ip.sb 2>/dev/null)
     
     if [[ "$ipv4_check" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         echo -e "${GREEN}>>> 检测到有效 IPv4 环境。${PLAIN}"
     else
+        # IPv6-Only 环境切换为官方 IPv6 Endpoint IP
         FINAL_EP_ADDR="2606:4700:d0::a29f:c001"
         echo -e "${SKYBLUE}>>> 检测到纯 IPv6 环境，切换为专用 Endpoint: ${FINAL_EP_ADDR}${PLAIN}"
     fi
@@ -125,8 +102,38 @@ check_env() {
     export FINAL_EP_PORT
 }
 
+restart_sb() {
+    # 确保日志权限
+    mkdir -p /var/log/sing-box/
+    chown -R root:root /var/log/sing-box/ >/dev/null 2>&1
+    
+    echo -e "${YELLOW}重启 Sing-box 服务...${PLAIN}"
+    
+    if command -v sing-box &> /dev/null; then
+        # 语法校验失败时输出具体错误
+        if ! sing-box check -c "$CONFIG_FILE"; then
+             echo -e "${RED}配置语法校验失败！正在回滚...${PLAIN}"
+             [[ -f "${CONFIG_FILE}.bak" ]] && cp "${CONFIG_FILE}.bak" "$CONFIG_FILE"
+             return
+        fi
+    fi
+
+    if systemctl list-unit-files | grep -q sing-box; then
+        systemctl restart sing-box
+    else
+        pkill -xf "sing-box run -c $CONFIG_FILE"
+        nohup sing-box run -c "$CONFIG_FILE" > /dev/null 2>&1 &
+    fi
+    sleep 2
+    if systemctl is-active --quiet sing-box || pgrep -x "sing-box" >/dev/null; then
+        echo -e "${GREEN}服务重启成功。${PLAIN}"
+    else
+        echo -e "${RED}服务重启失败！请检查日志。${PLAIN}"
+    fi
+}
+
 # ==========================================
-# 2. WARP 配置核心函数
+# 2. 核心功能函数
 # ==========================================
 
 clean_reserved() {
@@ -156,6 +163,7 @@ EOF
 write_warp_config() {
     local priv="$1" pub="$2" v4="$3" v6="$4" res="$5"
     
+    # 确保基础配置文件存在
     if [[ ! -f "$CONFIG_FILE" ]]; then
         mkdir -p "$(dirname "$CONFIG_FILE")"
         echo "{}" > "$CONFIG_FILE"
@@ -170,6 +178,9 @@ write_warp_config() {
     
     check_env
 
+    # 1. 生成 Endpoint 
+    # [Compliance] 使用 Endpoint 架构，Tag 设为 WARP
+    # [Compliance] Peers 字段使用 address/port (新标准)
     local endpoint_json=$(jq -n \
         --arg priv "$priv" \
         --arg pub "$pub" \
@@ -194,18 +205,23 @@ write_warp_config() {
             ] 
         }')
 
-    echo -e "${YELLOW}正在应用 v4.2 Endpoint 架构配置...${PLAIN}"
+    echo -e "${YELLOW}正在应用 v3.9 Final 架构配置...${PLAIN}"
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
     local TMP_CONF=$(mktemp)
     
+    # 初始化: 确保 endpoints 数组存在
     jq '.endpoints = (.endpoints // []) | .outbounds = (.outbounds // [])' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
+
+    # 清理旧配置: 移除所有 WARP 相关的 outbound 和 endpoint
     jq 'del(.outbounds[] | select(.tag == "WARP" or .tag == "warp" or .type == "wireguard"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq 'del(.endpoints[] | select(.tag == "warp-endpoint" or .tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
+
+    # 注入 Endpoint (直接进入 endpoints 数组)
     jq --argjson ep "$endpoint_json" '.endpoints += [$ep]' "$CONFIG_FILE" > "$TMP_CONF"
     
     if [[ $? -eq 0 && -s "$TMP_CONF" ]]; then
         mv "$TMP_CONF" "$CONFIG_FILE"
-        echo -e "${GREEN}配置写入成功，正在验证并重启...${PLAIN}"
+        echo -e "${GREEN}WARP 架构迁移与配置写入成功。${PLAIN}"
         restart_sb
     else
         echo -e "${RED}写入失败，恢复备份...${PLAIN}"
@@ -252,8 +268,8 @@ manual_warp() {
     read -p "内网 IPv6 [默认: $def_v6]: " v6
     v6=${v6:-$def_v6}
     
-    read -p "Reserved [默认: ${def_res:-[0,0,0]}]: " res_input
-    res_input=${res_input:-"${def_res:-[0,0,0]}"}
+    read -p "Reserved [默认: $def_res]: " res_input
+    res_input=${res_input:-$def_res}
     
     local res_json="[0,0,0]"
     if [[ "$res_input" =~ [0-9] ]]; then
@@ -272,9 +288,11 @@ manual_warp() {
 # ==========================================
 
 ensure_warp_exists() {
+    # 检查是否存在名为 WARP 的 endpoint (不查 outbound，因为新版不再使用 outbound)
     if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
        return 0
     fi
+    
     if [[ -f "$CRED_FILE" ]]; then
         read -p "未发现配置但存在凭证，是否恢复？[y/n]: " r
         [[ "$r" == "y" ]] && { source "$CRED_FILE"; write_warp_config "$PRIV_KEY" "$PUB_KEY" "$V4_ADDR" "$V6_ADDR" "$RESERVED"; return 0; }
@@ -287,7 +305,10 @@ apply_routing_rule() {
     echo -e "${YELLOW}正在应用路由规则...${PLAIN}"
     local TMP_CONF=$(mktemp)
     
-    cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
+    # 清空旧规则
+    jq 'del(.route.rules[] | select(.outbound == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
+    
+    # 前置插入 (Prepend)
     jq --argjson r "$rule_json" '.route.rules = [$r] + .route.rules' "$CONFIG_FILE" > "$TMP_CONF"
     if [[ $? -eq 0 && -s "$TMP_CONF" ]]; then
         mv "$TMP_CONF" "$CONFIG_FILE"
@@ -300,6 +321,7 @@ apply_routing_rule() {
 get_anti_loop_rule() {
     if [[ -z "$FINAL_EP_ADDR" ]]; then check_env >/dev/null; fi
     local ip_cidr="[]"
+    # 只有当 Endpoint 明确为 IPv6 IP 时才加 IP 规则，域名则不需要
     if [[ "$FINAL_EP_ADDR" == *":"* ]]; then
         ip_cidr="[\"${FINAL_EP_ADDR}/128\"]"
     fi
@@ -308,19 +330,7 @@ get_anti_loop_rule() {
 
 mode_stream() {
     ensure_warp_exists || return
-    # 2025 Revised: 纯域名规则 (修复了 Spotify URL 错误) + HBO/Paramount
-    apply_routing_rule "$(jq -n '{
-        "domain_suffix": [
-            "netflix.com","nflxvideo.net","netflix.net",
-            "openai.com","chatgpt.com","ai.com",
-            "google.com","youtube.com","youtu.be",
-            "disneyplus.com","hulu.com",
-            "hbonow.com","hbomax.com","paramountplus.com",
-            "googleusercontent.com","spotifycdn.com","scdn.co","pscp.tv"
-        ], 
-        "outbound": "WARP" 
-    }')"
-    echo -e "${GREEN}流媒体分流策略已应用 (2025 Final)。${PLAIN}"
+    apply_routing_rule "$(jq -n '{ "domain_suffix": ["netflix.com","nflxvideo.net","openai.com","ai.com","google.com","youtube.com"], "outbound": "WARP" }')"
 }
 
 mode_global() {
@@ -345,8 +355,6 @@ mode_specific_node() {
     local node_list=$(jq -r '.inbounds[] | "\(.tag) | \(.type)"' "$CONFIG_FILE" | nl)
     echo "$node_list"
     read -p "输入节点序号 (空格分隔): " selection
-    [[ -z "$selection" ]] && { echo -e "${RED}未选择节点。${PLAIN}"; return; }
-    
     local tags_json="[]"
     for num in $selection; do
         local tag=$(echo "$node_list" | sed -n "${num}p" | awk -F'|' '{print $1}' | awk '{print $2}')
@@ -359,17 +367,10 @@ uninstall_warp() {
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak_un"
     local TMP_CONF=$(mktemp)
     
+    # 清理所有 WARP 相关配置 (Outbound + Endpoint + Rules)
     jq 'del(.outbounds[] | select(.tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq 'del(.endpoints[] | select(.tag == "warp-endpoint" or .tag == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
     jq 'del(.route.rules[] | select(.outbound == "WARP"))' "$CONFIG_FILE" > "$TMP_CONF" && mv "$TMP_CONF" "$CONFIG_FILE"
-    
-    if [[ -f "$CRED_FILE" ]]; then
-        read -p "是否删除保存的 WARP 凭证文件？(y/N): " del_cred
-        if [[ "$del_cred" == "y" || "$del_cred" == "Y" ]]; then
-            rm -f "$CRED_FILE"
-            echo -e "${GREEN}WARP 凭证文件已删除。${PLAIN}"
-        fi
-    fi
     
     echo -e "${GREEN}WARP 卸载完成。${PLAIN}"; restart_sb
 }
@@ -385,7 +386,7 @@ show_menu() {
         local st="${RED}未配置${PLAIN}"
         if [[ -f "$CONFIG_FILE" ]]; then
             if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
-                st="${GREEN}已配置 (v4.2 Ultimate)${PLAIN}"
+                st="${GREEN}已配置 (v3.9 Final)${PLAIN}"
             fi
         fi
         echo -e "================ Native WARP 管理中心 (Sing-box 1.12+) ================"
@@ -413,7 +414,7 @@ show_menu() {
 }
 
 auto_main() {
-    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署 (v4.2)...${PLAIN}"
+    echo -e "${GREEN}>>> [WARP-SB] 启动自动化部署 (v3.9)...${PLAIN}"
     check_dependencies
     if [[ -n "$WARP_PRIV_KEY" ]] && [[ -n "$WARP_IPV6" ]]; then
         save_credentials "$WARP_PRIV_KEY" "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=" "172.16.0.2/32" "$WARP_IPV6" "${WARP_RESERVED:-[0,0,0]}"
@@ -428,17 +429,7 @@ auto_main() {
         2) rule=$(jq -n '{ "ip_version": 6, "outbound": "WARP" }') ;;
         3) [[ -n "$WARP_INBOUND_TAGS" ]] && rule=$(jq -n --argjson ib "$(echo "$WARP_INBOUND_TAGS" | jq -R 'split(",")')" '{ "inbound": $ib, "outbound": "WARP" }') ;;
         4) rule=$(jq -n '{ "outbound": "WARP" }') ;;
-        *) rule=$(jq -n '{
-                "domain_suffix": [
-                    "netflix.com","nflxvideo.net","netflix.net",
-                    "openai.com","chatgpt.com","ai.com",
-                    "google.com","youtube.com","youtu.be",
-                    "disneyplus.com","hulu.com",
-                    "hbonow.com","hbomax.com","paramountplus.com",
-                    "googleusercontent.com","spotifycdn.com","scdn.co","pscp.tv"
-                ],
-                "outbound": "WARP"
-            }') ;;
+        *) rule=$(jq -n '{ "domain_suffix": ["netflix.com","openai.com","google.com","youtube.com"], "outbound": "WARP" }') ;;
     esac
     
     if [[ -n "$rule" ]]; then
