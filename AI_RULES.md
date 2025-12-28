@@ -93,7 +93,7 @@
 	```
 * **WireGuard outbound** 已废弃，迁移到 endpoints。
 * **Destination override** 迁移到 route options。
-* ** 更多细节请参考**代码库**中文件：**singbox/docs/migration.md** 或 **官方文档**：https://sing-box.sagernet.org/migration/
+* **更多细节**请参考**代码库**中文件：**singbox/docs/migration.md** 或 **官方文档**：https://sing-box.sagernet.org/migration/
 ---
 
 ## 2. Xray-core 合规规范 (v25.12.8+)
@@ -178,10 +178,10 @@
     * **完整示例**: `vless://UUID@IP:PORT?encryption=MLKEM_KEY&security=reality&sni=SNI&fp=chrome&pbk=REALITY_PUB&sid=SID&type=xhttp&path=PATH&mode=auto#NAME`
 
 ### 2.2 ECH 支持 (Encrypted Client Hello)
-* ** 最低版本：v25.7.26+。
-* ** 功能：隐藏真实 SNI，常用于强制 Cloudflare CDN 的 ECH 直连。
-* ** 配置位置：tlsSettings.ech 对象。
-* ** 关键参数：
+* **最低版本**：v25.7.26+。
+* **功能**：隐藏真实 SNI，常用于强制 Cloudflare CDN 的 ECH 直连。
+* **配置位置**：tlsSettings.ech 对象。
+* **关键参数**：
 	```json
 	"tlsSettings": {
 	  "ech": {
@@ -191,6 +191,6 @@
 	  }
 	}
 	```
-* ** 注意：需配合 Reality 或独立 TLS 使用，客户端需支持 ECH。
+* ** 注意**：需配合 Reality 或独立 TLS 使用，客户端需支持 ECH。
 
 ### 2.3 待更新...
