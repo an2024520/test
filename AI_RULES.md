@@ -34,8 +34,8 @@
     * **禁忌**: **严禁**使用 `warp-endpoint` 等非标准名称并将其关联到 `WARP` 出站（此操作会导致路由或握手失败）。
 
 ### 1.3 Rule-Set 迁移规范 (v1.12+ 强制)
-* ** geoip / geosite 已完全移除，必须使用 rule_set（remote 或 local）。
-* ** 必须启用缓存以避免重复下载：
+* ** geoip / geosite 已完全移除，必须使用 rule_set（remote 或 local）。**
+* ** 必须启用缓存**以避免重复下载：
 	```json
 	"experimental": {
 	"cache_file": {
@@ -43,7 +43,7 @@
 	 }
 	}
 	```
-* ** 标准示例（推荐使用 SagerNet 官方 rule-set）：
+* ** 标准示例**（推荐使用 SagerNet 官方 rule-set）：
 	```json
 	"route": {
 	  "rule_set": [
@@ -73,15 +73,15 @@
 
 ### 1.4 迁移指南关键摘录 (v1.12.0+ 必读)
 以下为官方 migration.md 的核心变更摘要，AI 生成配置时必须遵守：
-* ** **DNS Servers 重构**：废弃 address，统一使用 type + server：
+* **DNS Servers 重构**：废弃 address，统一使用 type + server：
 	```json
 	// 旧（废弃）
 	{ "address": "tls://1.1.1.1" }
 	// 新（必须）
 	{ "type": "tls", "server": "1.1.1.1" }
 	```
-* ** **FakeIP、DHCP、RCode** 等均有专用 type。
-* ** **Inbound sniff / domain_strategy** 迁移到 route rules：
+* **FakeIP、DHCP、RCode** 等均有专用 type。
+* **Inbound sniff / domain_strategy** 迁移到 route rules：
 	```json
 	// 新方式
 	"route": {
@@ -91,8 +91,8 @@
 	  ]
 	}
 	```
-* ** **WireGuard outbound** 已废弃，迁移到 endpoints。
-* ** **Destination override** 迁移到 route options。
+* **WireGuard outbound** 已废弃，迁移到 endpoints。
+* **Destination override** 迁移到 route options。
 * ** 更多细节请参考**代码库**中文件：**singbox/docs/migration.md** 或 **官方文档**：https://sing-box.sagernet.org/migration/
 ---
 
