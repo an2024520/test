@@ -108,7 +108,7 @@ apply_strategy() {
     echo -e "------------------------------------------------"
     echo -e "${SKYBLUE}请选择流量转发策略:${PLAIN}"
     echo -e " 1. IPv6走直连 + IPv4走WARP (默认 - 保留原生IPv6性能)"
-    echo -e " 2. 双栈全部走WARP (隐藏真实IP / 全解锁)"
+    echo -e " 2. 双栈全部走WARP (IPV6优先/隐藏真实IP / 全解锁)"
     read -p "输入选项 (1 或 2，默认1): " strategy_select
     strategy_select=${strategy_select:-1}
 
