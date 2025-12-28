@@ -1,9 +1,10 @@
 #!/bin/bash
 # ============================================================
-#  Sing-box WARP IPv6 优先分流补丁 (v3.6 Final)
+#  Sing-box WARP IPv6 优先分流补丁 (v3.6 Final - Fixed)
 #  - 核心修复: 增加 sing-box check 配置验证与回滚
 #  - 核心修复: 增加 Systemd/Pkill 双模重启兼容 (Docker友好)
 #  - 功能: 多节点选择、自动清理旧规则、IPv6直连/IPv4走WARP
+#  - 修复: 卸载策略时 jq 处理 null inbound 的报错
 # ============================================================
 
 RED='\033[0;31m'
@@ -75,7 +76,6 @@ restart_service() {
 # 3. 获取目标节点
 get_target_nodes() {
     echo -e "${SKYBLUE}正在读取入站节点列表...${PLAIN}"
-    # 排除 mixed 类型的 inbound，只列出可能有入站流量的节点
     local nodes=$(jq -r '.inbounds[] | "\(.tag) | \(.type)"' "$CONFIG_FILE" | nl)
     
     if [[ -z "$nodes" ]]; then
@@ -86,41 +86,41 @@ get_target_nodes() {
     echo -e "============================================"
     echo "$nodes"
     echo -e "============================================"
-    echo -e "${YELLOW}提示: 输入序号选择节点，支持多选 (例如: 1 3)${PLAIN}"
-    echo -e "${YELLOW}输入 0 或回车退出${PLAIN}"
+    echo -e "${SKYBLUE}请输入节点序号 (支持多选，空格分隔):${PLAIN}"
+    echo -e "${GRAY}输入 0 或直接回车退出${PLAIN}"
     read -p "请选择: " selection
     
     if [[ -z "$selection" || "$selection" == "0" ]]; then
+        echo -e "${YELLOW}操作取消。${PLAIN}"
         exit 0
     fi
 
     target_tags=()
     for num in $selection; do
-        # 提取 tag 名称
-        local tag=$(echo "$nodes" | sed -n "${num}p" | awk -F'|' '{print $1}' | awk '{$1=$1;print}')
+        local tag=$(echo "$nodes" | sed -n "${num}p" | awk -F'|' '{print $1}' | awk '{print $2}')
         if [[ -n "$tag" ]]; then
             target_tags+=("$tag")
+            echo -e "${GREEN}已选择节点: $num $tag${PLAIN}"
+        else
+            echo -e "${YELLOW}序号 $num 无效，已忽略。${PLAIN}"
         fi
     done
 
     if [[ ${#target_tags[@]} -eq 0 ]]; then
-        echo -e "${RED}无效的选择。${PLAIN}"
-        exit 1
+        echo -e "${RED}未选择任何有效节点，操作取消。${PLAIN}"
+        exit 0
     fi
-    
-    echo -e "${GREEN}已选择节点: ${target_tags[*]}${PLAIN}"
 }
 
-# 4. 应用策略
+# 4. 应用 IPv6 优先策略
 apply_ipv6_priority() {
     cp "$CONFIG_FILE" "$BACKUP_FILE"
     local tmp_json=$(mktemp)
-    
-    # 构造 rule: IPv6 -> Direct
+
+    # 智能识别 direct 出站
     local v6_outbound_target="direct"
-    # 如果找不到 direct，尝试寻找第一个 type=direct 的 tag
-    if ! jq -e '.outbounds[] | select(.tag == "direct")' "$CONFIG_FILE" >/dev/null 2>&1; then
-        local found_direct=$(jq -r '.outbounds[] | select(.type == "direct") | .tag' "$CONFIG_FILE" | head -n 1)
+    if jq -e '.outbounds[] | select(.tag == "direct")' "$CONFIG_FILE" >/dev/null 2>&1; then
+        local found_direct=$(jq -r '.outbounds[] | select(.tag == "direct") | .tag' "$CONFIG_FILE" | head -n 1)
         [[ -n "$found_direct" ]] && v6_outbound_target="$found_direct"
     fi
     
@@ -143,17 +143,16 @@ apply_ipv6_priority() {
 
     echo -e "${YELLOW}正在写入分流规则 (IPv6->${v6_outbound_target}, IPv4->WARP)...${PLAIN}"
 
-    # 使用 jq 将新规则 prepend (加到最前) 到 route.rules
-    # 同时设置入站的 domain_strategy 为 prefer_ipv6
+    # 单次 jq 操作：设置 domain_strategy + 置顶两条规则
     jq --argjson r1 "$rule_v6" --argjson r2 "$rule_v4" --argjson tags "$tags_arg" '
-        (.inbounds[] | select(.tag as $t | $tags | index($t))).domain_strategy = "prefer_ipv6" |
+        (.inbounds[]? | select(.tag as $t | $tags | index($t))).domain_strategy = "prefer_ipv6" |
         .route.rules = [$r1, $r2] + .route.rules
     ' "$CONFIG_FILE" > "$tmp_json" && mv "$tmp_json" "$CONFIG_FILE"
 
     restart_service
 }
 
-# 5. 卸载策略
+# 5. 卸载策略（修复 null inbound 报错）
 uninstall_policy() {
     echo -e "${YELLOW}正在移除相关分流规则...${PLAIN}"
     get_target_nodes
@@ -163,13 +162,18 @@ uninstall_policy() {
     
     local tags_json=$(printf '%s\n' "${target_tags[@]}" | jq -R . | jq -s .)
     
-    # 清理逻辑：移除 inbound 包含目标 tag 的规则，并重置 domain_strategy
+    # 修复版：安全处理 inbound 为 null/字符串/数组
     jq --argjson targets "$tags_json" '
-        (.inbounds[] | select(.tag as $t | $targets | index($t))).domain_strategy = null |
+        # 重置 domain_strategy
+        (.inbounds[]? | select(.tag as $t | $targets | index($t))).domain_strategy = null |
+
+        # 清理路由规则：安全处理 inbound 为 null/字符串/数组
         .route.rules |= map(select(
-            (.inbound | type == "array" and (.inbound | inside($targets) | not)) or
-            (.inbound | type == "string" and ([.inbound] | inside($targets) | not)) or
-            (.inbound == null)
+            if .inbound == null then true
+            elif (.inbound | type) == "string" then ($targets | contains([.inbound]) | not)
+            elif (.inbound | type) == "array" then ($targets | any(in .inbound) | not)
+            else true
+            end
         ))
     ' "$CONFIG_FILE" > "$tmp_json" && mv "$tmp_json" "$CONFIG_FILE"
     
