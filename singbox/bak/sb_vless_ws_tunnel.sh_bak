@@ -2,11 +2,10 @@
 
 # ============================================================
 #  Sing-box 节点模块: VLESS + WS (Tunnel专用)
-#  - 版本: v1.4.2 (Final)
+#  - 版本: v1.3 (Security-Fix)
 #  - 模式: Manual (交互式) / Auto (变量传参)
 #  - 修复: 强制监听 127.0.0.1，防止公网直接扫描
 #  - 修复: 强化 Tag + Port 双重清理逻辑
-#  - 新增: 自动模式下 ARGO_DOMAIN 为空时主动询问并生成完整链接
 # ============================================================
 
 RED='\033[0;31m'
@@ -71,15 +70,6 @@ write_node_config() {
     # 4. 写入
     local tmp_add=$(mktemp)
     jq --argjson new "$node_json" 'if .inbounds == null then .inbounds = [] else . end | .inbounds += [$new]' "$CONFIG_FILE" > "$tmp_add" && mv "$tmp_add" "$CONFIG_FILE"
-
-    # 新增配置验证
-    echo -e "${YELLOW}正在验证配置文件语法...${PLAIN}"
-    if ! "$SB_BIN" check -c "$CONFIG_FILE" >/dev/null 2>&1; then
-        echo -e "${RED}配置验证失败！已删除无效节点配置，请检查问题后重新运行。${PLAIN}"
-        local tmp_cleanup=$(mktemp)
-        jq --arg tag "$node_tag" 'del(.inbounds[]? | select(.tag == $tag))' "$CONFIG_FILE" > "$tmp_cleanup" && mv "$tmp_cleanup" "$CONFIG_FILE"
-        return 1
-    fi
 
     # 5. 重启
     systemctl restart sing-box
@@ -167,26 +157,7 @@ auto_main() {
     local domain="${ARGO_DOMAIN}"
     local uuid=$($SB_BIN generate uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
 
-    echo -e "${GREEN}>>> [自动模式] 使用端口: ${port}${PLAIN}"
-    echo -e "${GREEN}>>> [自动模式] 使用路径: ${path}${PLAIN}"
-
-    if [[ "${path:0:1}" != "/" ]]; then path="/$path"; fi
-
     if write_node_config "$port" "$path" "$uuid"; then
-        # +++ MODIFIED +++ 自动模式下若无域名，主动询问并提醒安装 Argo
-        if [[ -z "$domain" ]]; then
-            echo -e "${YELLOW}警告: 未检测到 ARGO_DOMAIN 环境变量！${PLAIN}"
-            echo -e "${YELLOW}此节点为 Tunnel 专用，必须配合 Argo Tunnel 使用，否则无法对外连接。${PLAIN}"
-            echo -e "${YELLOW}请确保已在主脚本中启用 Argo 并设置域名。${PLAIN}"
-            read -p "请输入您的 Argo Tunnel 域名 (例如: xxx.trycloudflare.com): " input_domain
-            if [[ -n "$input_domain" ]]; then
-                domain="$input_domain"
-                echo -e "${GREEN}已使用您输入的域名生成  $domain ${PLAIN}"
-            else
-                echo -e "${YELLOW}您未输入域名，将仅输出本地配置信息。${PLAIN}"
-            fi
-        fi
-
         print_info "$port" "$path" "$uuid" "$domain"
     else
         echo -e "${RED}[错误] 节点配置写入失败。${PLAIN}"
