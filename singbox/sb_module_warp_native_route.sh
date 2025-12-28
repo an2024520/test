@@ -1,4 +1,6 @@
 #!/bin/bash
+echo "v4.3"
+sleep 3
 # ==============================================================================
 # --- AI Developer Instructions (CRITICAL: Sing-box v1.12+ Standards) ---
 # 
