@@ -1,10 +1,15 @@
 #!/bin/bash
 
 # ============================================================
-#  模块二：VLESS + XHTTP + Reality (v1.2 Refactor)
-#  - 协议: XHTTP (Xray 新一代传输协议 / HTTP/3 内核)
-#  - 升级: 增加 OpenClash/Meta YAML 输出
-#  - 修复: 优化配置文件初始化与双重清理逻辑 (Fix-Crash)
+#  模块二：VLESS + XHTTP + Reality (v1.3.2 Final)
+#  - 默认 SNI: www.microsoft.com (2025 社区主流)
+#  - ShortID: 仅生成一个随机 8 位 (更安全，重换即重部署)
+#  - Tag: 基于端口 (Xray-XHTTP-${PORT})，简洁唯一
+#  - 新增: 客户端兼容性提示
+#  - 新增: 结构化 JSON 日志 (/root/xray_nodes.json)
+#  - 新增: jq 全 --argjson 安全注入
+#  - 新增: xray -test 配置验证
+#  - 新增: 自动模式默认值日志提示
 # ============================================================
 
 # 颜色定义
@@ -17,6 +22,7 @@ PLAIN='\033[0m'
 # 核心路径
 CONFIG_FILE="/usr/local/etc/xray/config.json"
 XRAY_BIN="/usr/local/bin/xray_core/xray"
+LOG_FILE="/root/xray_nodes.json"
 
 echo -e "${GREEN}>>> [模块二] 智能添加节点: VLESS + XHTTP + Reality ...${PLAIN}"
 
@@ -31,7 +37,7 @@ if ! command -v jq &> /dev/null || ! command -v openssl &> /dev/null; then
     apt update -y && apt install -y jq openssl
 fi
 
-# --- 2. 配置文件初始化 (修复日志路径) ---
+# --- 2. 配置文件初始化 ---
 if [[ ! -f "$CONFIG_FILE" ]]; then
     echo -e "${YELLOW}配置文件不存在，正在初始化标准骨架...${PLAIN}"
     mkdir -p "$(dirname "$CONFIG_FILE")"
@@ -58,11 +64,15 @@ EOF
     echo -e "${GREEN}标准骨架初始化完成。${PLAIN}"
 fi
 
-# --- 3. 参数获取 (自动/手动) ---
+# --- 3. 参数获取 ---
+PORT=${PORT:-${XRAY_XHTTP_PORT:-2053}}
+SNI=${XRAY_XHTTP_SNI:-"www.microsoft.com"}
+XHTTP_PATH=${XRAY_XHTTP_PATH:-"/$(openssl rand -hex 4)"}
+
 if [[ "$AUTO_SETUP" == "true" ]]; then
-    echo -e "${GREEN}>>> [自动模式] 读取参数...${PLAIN}"
-    PORT=${XRAY_XHTTP_PORT:-2053}
-    SNI=${XRAY_XHTTP_SNI:-"www.sony.jp"}
+    echo -e "${GREEN}>>> [自动模式] 使用参数: Port=${PORT}, SNI=${SNI}, Path=${XHTTP_PATH}${PLAIN}"
+    [[ -z "$XRAY_XHTTP_SNI" ]] && echo -e "${YELLOW}>>> [日志] 使用默认 SNI: www.microsoft.com${PLAIN}"
+    [[ -z "$XRAY_XHTTP_PATH" ]] && echo -e "${YELLOW}>>> [日志] 使用随机 Path: ${XHTTP_PATH}${PLAIN}"
 else
     echo -e "${YELLOW}--- 配置 XHTTP Reality ---${PLAIN}"
     while true; do
@@ -77,39 +87,48 @@ else
     done
 
     echo -e "${YELLOW}请选择伪装域名 (SNI):${PLAIN}"
-    echo -e "  1. www.sony.jp (默认)"
+    echo -e "  1. www.microsoft.com (推荐/默认)"
     echo -e "  2. updates.cdn-apple.com"
-    echo -e "  3. 手动输入"
+    echo -e "  3. www.cloudflare.com"
+    echo -e "  4. 手动输入"
     read -p "选择: " s
     case $s in
         2) SNI="updates.cdn-apple.com" ;;
-        3) read -p "输入域名: " SNI; [[ -z "$SNI" ]] && SNI="www.sony.jp" ;;
-        *) SNI="www.sony.jp" ;;
+        3) SNI="www.cloudflare.com" ;;
+        4) read -p "输入域名: " SNI; [[ -z "$SNI" ]] && SNI="www.microsoft.com" ;;
+        *) SNI="www.microsoft.com" ;;
     esac
+
+    read -p "Path (默认随机): " input_path
+    [[ -n "$input_path" ]] && XHTTP_PATH="$input_path"
+fi
+
+# 端口强制校验
+if [[ ! "$PORT" =~ ^[0-9]+$ ]]; then
+    echo -e "${RED}致命错误: 端口参数无效，重置为 2053。${PLAIN}"
+    PORT=2053
 fi
 
 # --- 4. 密钥生成 ---
 echo -e "${YELLOW}正在生成独立密钥...${PLAIN}"
 UUID=$($XRAY_BIN uuid)
-SHORT_ID=$(openssl rand -hex 4)
-XHTTP_PATH="/$(openssl rand -hex 4)"
 RAW_KEYS=$($XRAY_BIN x25519)
 PRIVATE_KEY=$(echo "$RAW_KEYS" | grep "Private" | awk -F ":" '{print $2}' | tr -d ' \r\n')
-PUBLIC_KEY=$(echo "$RAW_KEYS" | grep -E "Password|Public" | awk -F ":" '{print $2}' | tr -d ' \r\n')
+PUBLIC_KEY=$(echo "$RAW_KEYS" | grep -E "Public" | awk -F ":" '{print $2}' | tr -d ' \r\n')
+SHORT_ID=$(openssl rand -hex 4)  # 仅一个随机 ShortID
 
-# --- 5. 核心执行 (注入配置) ---
+# 节点 Tag (基于端口，简洁唯一)
 NODE_TAG="Xray-XHTTP-${PORT}"
 
-# [关键修复] Tag + Port 双重清理
-# 使用 tonumber 确保端口比较准确，防止类型不匹配
+# --- 5. 清理旧节点 ---
 tmp_clean=$(mktemp)
 jq --argjson p "$PORT" --arg tag "$NODE_TAG" \
    'del(.inbounds[]? | select(.port == $p or .tag == $tag))' \
    "$CONFIG_FILE" > "$tmp_clean" && mv "$tmp_clean" "$CONFIG_FILE"
 
-# 构建节点 JSON
+# --- 6. 构建节点 JSON ---
 NODE_JSON=$(jq -n \
-    --arg port "$PORT" \
+    --argjson port "$PORT" \
     --arg tag "$NODE_TAG" \
     --arg uuid "$UUID" \
     --arg path "$XHTTP_PATH" \
@@ -119,7 +138,7 @@ NODE_JSON=$(jq -n \
     '{
       tag: $tag,
       listen: "0.0.0.0",
-      port: ($port | tonumber),
+      port: $port,
       protocol: "vless",
       settings: {
         clients: [{id: $uuid, flow: ""}],
@@ -140,11 +159,18 @@ NODE_JSON=$(jq -n \
       sniffing: { enabled: true, destOverride: ["http", "tls", "quic"], routeOnly: true }
     }')
 
-# 注入新节点
+# 注入配置
 tmp_add=$(mktemp)
-jq --argjson new "$NODE_JSON" '.inbounds += [$new_node]' "$CONFIG_FILE" > "$tmp_add" && mv "$tmp_add" "$CONFIG_FILE"
+jq --argjson new "$NODE_JSON" '.inbounds += [$new]' "$CONFIG_FILE" > "$tmp_add" && mv "$tmp_add" "$CONFIG_FILE"
 
-# --- 6. 重启与输出 ---
+# --- 7. 配置验证 ---
+echo -e "${YELLOW}正在验证配置语法...${PLAIN}"
+if ! $XRAY_BIN -test -config="$CONFIG_FILE" > /dev/null 2>&1; then
+    echo -e "${RED}配置验证失败！请检查错误。${PLAIN}"
+    exit 1
+fi
+
+# --- 8. 重启服务 ---
 systemctl restart xray
 sleep 2
 
@@ -158,15 +184,14 @@ if systemctl is-active --quiet xray; then
     echo -e "${GREEN}========================================${PLAIN}"
     echo -e "节点 Tag    : ${YELLOW}${NODE_TAG}${PLAIN}"
     echo -e "端口        : ${YELLOW}${PORT}${PLAIN}"
-    echo -e "协议        : ${YELLOW}XHTTP${PLAIN}"
+    echo -e "SNI         : ${YELLOW}${SNI}${PLAIN}"
     echo -e "路径 (Path) : ${YELLOW}${XHTTP_PATH}${PLAIN}"
+    echo -e "ShortID     : ${YELLOW}${SHORT_ID}${PLAIN}"
     echo -e "----------------------------------------"
     echo -e "🚀 [v2rayN 分享链接]:"
     echo -e "${YELLOW}${SHARE_LINK}${PLAIN}"
     echo -e "----------------------------------------"
-
-    # === 新增：OpenClash / Meta 输出 ===
-    echo -e "🐱 [OpenClash / Meta (Mihomo) 配置块]:"
+    echo -e "🐱 [OpenClash / Meta 配置块]:"
     echo -e "${YELLOW}"
     cat <<EOF
 - name: "${NODE_TAG}"
@@ -187,10 +212,21 @@ if systemctl is-active --quiet xray; then
     short-id: ${SHORT_ID}
 EOF
     echo -e "${PLAIN}----------------------------------------"
+    echo -e "${SKYBLUE}注意：XHTTP + Reality 推荐使用最新版 v2rayN / Nekobox / HiddifyNext。${PLAIN}"
+    echo -e "${SKYBLUE}Clash Meta 需开启 experimental 并正确填写 xhttp-opts 与 reality-opts。${PLAIN}"
 
+    # --- 9. 结构化日志记录 ---
     if [[ "$AUTO_SETUP" == "true" ]]; then
-        LOG_FILE="/root/xray_nodes.txt"
-        echo "Tag: ${NODE_TAG} | ${SHARE_LINK}" >> "$LOG_FILE"
+        mkdir -p "$(dirname "$LOG_FILE")"
+        jq -n --arg tag "$NODE_TAG" \
+              --arg link "$SHARE_LINK" \
+              --argjson port "$PORT" \
+              --arg sni "$SNI" \
+              --arg path "$XHTTP_PATH" \
+              --arg pk "$PUBLIC_KEY" \
+              --arg sid "$SHORT_ID" \
+              '{tag: $tag, link: $link, port: $port, sni: $sni, path: $path, publicKey: $pk, shortId: $sid, time: now | strftime("%Y-%m-%d %H:%M:%S")}' \
+              >> "$LOG_FILE"
         echo -e "${SKYBLUE}>>> [自动记录] 已追加至: ${LOG_FILE}${PLAIN}"
     fi
 else

@@ -1,8 +1,9 @@
 #!/bin/bash
 # ============================================================
-#  Commander Auto-Deploy (v7.4 Hy2 Fixed)
+#  Commander Auto-Deploy (v7.6 Hy2 & XHTTP Final)
 #  - 特性: 严格 IP 检测 | 纯净 URL (适配 Worker)
-#  - 升级: 修复 Sing-box Hysteria 2 自动部署参数传递问题
+#  - 升级: 修复 Xray XHTTP 协议参数传递 (SNI/Path/Port)
+#  - 修正: 统一 XHTTP 默认 SNI 为 www.microsoft.com
 # ============================================================
 
 # --- 基础定义 ---
@@ -194,24 +195,15 @@ deploy_logic() {
         # E. Hysteria 2 (智能部署)
         if [[ "$DEPLOY_SB_HY2" == "true" ]]; then
              echo -e "${GREEN}>>> [SB] Hysteria 2 节点 (Smart Mode)...${PLAIN}"
-             
-             # --- [修改处 Start] ---
-             # 传递参数给子脚本 (变量名必须匹配 sb_hy2_deploy.sh 的读取逻辑)
              export PORT="$VAR_SB_HY2_PORT"
              export DOMAIN_INPUT="$VAR_SB_HY2_DOMAIN"
              export AUTO_SETUP=true
-             # --- [修改处 End] ---
-             
              run "sb_hy2_deploy.sh"
-             
-             # Tag 累加逻辑
              if [[ -n "$VAR_SB_HY2_DOMAIN" ]]; then
                  SB_TAGS_ACC+="Hy2-${VAR_SB_HY2_DOMAIN},"
              else
                  SB_TAGS_ACC+="Hy2-${VAR_SB_HY2_PORT},"
              fi
-             
-             # 清理环境变量
              unset PORT DOMAIN_INPUT AUTO_SETUP
         fi
     fi
@@ -254,9 +246,13 @@ deploy_logic() {
         # D. XHTTP Reality
         if [[ "$DEPLOY_XRAY_XHTTP" == "true" ]]; then
             echo -e "${GREEN}>>> [Xray] XHTTP Reality 节点 (: ${VAR_XRAY_XHTTP_PORT})...${PLAIN}"
-            export XRAY_XHTTP_PORT="$VAR_XRAY_XHTTP_PORT"
+            export PORT="$VAR_XRAY_XHTTP_PORT"
+            export XRAY_XHTTP_SNI="$VAR_XRAY_XHTTP_SNI"
+            export XRAY_XHTTP_PATH="$VAR_XRAY_XHTTP_PATH"
+            
             run "xray_vless_xhttp_reality.sh"
-            unset XRAY_XHTTP_PORT
+            
+            unset PORT XRAY_XHTTP_SNI XRAY_XHTTP_PATH
             XRAY_TAGS_ACC+="Xray-XHTTP-${VAR_XRAY_XHTTP_PORT},"
         fi
 
@@ -391,7 +387,16 @@ menu_protocols() {
             6) if [[ "$DEPLOY_XRAY_VISION" == "true" ]]; then DEPLOY_XRAY_VISION=false; else DEPLOY_XRAY_VISION=true; INSTALL_XRAY=true; read -p "端口(1443): " p; VAR_XRAY_VISION_PORT=${p:-1443}; fi ;;
             7) if [[ "$DEPLOY_XRAY_WS" == "true" ]]; then DEPLOY_XRAY_WS=false; else DEPLOY_XRAY_WS=true; INSTALL_XRAY=true; read -p "端口(8443): " p; VAR_XRAY_WS_PORT=${p:-8443}; read -p "域名: " d; VAR_XRAY_WS_DOMAIN=$d; read -p "Path(/ws): " q; VAR_XRAY_WS_PATH=${q:-/ws}; fi ;;
             8) if [[ "$DEPLOY_XRAY_WS_TUNNEL" == "true" ]]; then DEPLOY_XRAY_WS_TUNNEL=false; else DEPLOY_XRAY_WS_TUNNEL=true; INSTALL_XRAY=true; read -p "端口(8081): " p; VAR_XRAY_WS_TUNNEL_PORT=${p:-8081}; read -p "Path(/xr): " q; VAR_XRAY_WS_TUNNEL_PATH=${q:-/xr}; if [[ "$INSTALL_ARGO" != "true" ]]; then echo -e "${YELLOW}提示: 建议开启 Argo${PLAIN}"; INSTALL_ARGO=true; read -p "Token: " t; export ARGO_AUTH="$t"; read -p "Domain: " d; export ARGO_DOMAIN="$d"; fi; fi ;;
-            9) if [[ "$DEPLOY_XRAY_XHTTP" == "true" ]]; then DEPLOY_XRAY_XHTTP=false; else DEPLOY_XRAY_XHTTP=true; INSTALL_XRAY=true; read -p "端口(2053): " p; VAR_XRAY_XHTTP_PORT=${p:-2053}; fi ;;
+            # [修改] 增加 SNI 和 Path 录入，统一默认值为 Microsoft
+            9) if [[ "$DEPLOY_XRAY_XHTTP" == "true" ]]; then 
+                   DEPLOY_XRAY_XHTTP=false; 
+               else 
+                   DEPLOY_XRAY_XHTTP=true; 
+                   INSTALL_XRAY=true; 
+                   read -p "端口(2053): " p; VAR_XRAY_XHTTP_PORT=${p:-2053}; 
+                   read -p "SNI(www.microsoft.com): " s; VAR_XRAY_XHTTP_SNI=${s:-"www.microsoft.com"}; 
+                   read -p "Path(随机): " q; VAR_XRAY_XHTTP_PATH=${q}; 
+               fi ;;
             10) if [[ "$DEPLOY_XRAY_MLKEM" == "true" ]]; then DEPLOY_XRAY_MLKEM=false; else DEPLOY_XRAY_MLKEM=true; INSTALL_XRAY=true; read -p "端口(2088): " p; VAR_XRAY_MLKEM_PORT=${p:-2088}; fi ;;
             0) break ;;
         esac

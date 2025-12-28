@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  Sing-box 节点新增: VLESS + Vision + Reality (v3.5 Optimized)
+#  Sing-box 节点新增: VLESS + Vision + Reality (v3.4 Final-Fix)
 #  - 架构: 参数分流 (自动/手动) -> 统一执行 -> 统一输出
 #  - 修复: 写入配置前强制清理同端口/同Tag节点
 # ============================================================
@@ -44,9 +44,8 @@ if [[ "$AUTO_SETUP" == "true" ]]; then
     echo -e "${GREEN}>>> [自动模式] 正在读取参数...${PLAIN}"
     PORT=${PORT:-443}
     echo -e "端口: ${GREEN}$PORT${PLAIN}"
-    SNI=${REALITY_DOMAIN:-"www.microsoft.com"}  # +++ MODIFIED +++ 默认改为 microsoft (2025 主流)
+    SNI=${REALITY_DOMAIN:-"updates.cdn-apple.com"}
     echo -e "SNI : ${GREEN}$SNI${PLAIN}"
-    echo -e "${YELLOW}>>> [自动模式] 使用默认 SNI: www.microsoft.com${PLAIN}"  # +++ MODIFIED +++ 默认值日志提示
 else
     while true; do
         read -p "请输入监听端口 (推荐 443, 2053, 默认 443): " CUSTOM_PORT
@@ -59,31 +58,29 @@ else
     done
 
     echo -e "${YELLOW}请选择伪装域名 (SNI):${PLAIN}"
-    echo -e "  1. www.microsoft.com (推荐/默认)"  # +++ MODIFIED +++ 调整为首位推荐
-    echo -e "  2. updates.cdn-apple.com"
-    echo -e "  3. www.sony.jp"
-    echo -e "  4. www.nintendo.co.jp"
+    echo -e "  1. www.sony.jp"
+    echo -e "  2. www.nintendo.co.jp"
+    echo -e "  3. updates.cdn-apple.com (默认)"
+    echo -e "  4. www.microsoft.com"
     echo -e "  5. 手动输入"
     read -p "请选择 [1-5]: " SNI_CHOICE
     case $SNI_CHOICE in
-        2) SNI="updates.cdn-apple.com" ;; 3) SNI="www.sony.jp" ;; 4) SNI="www.nintendo.co.jp" ;;
-        5) read -p "输入域名: " MANUAL_SNI; [[ -z "$MANUAL_SNI" ]] && SNI="www.microsoft.com" || SNI="$MANUAL_SNI" ;;  # +++ MODIFIED +++ 默认 microsoft
-        *) SNI="www.microsoft.com" ;;  # +++ MODIFIED +++ 默认改为 microsoft
+        1) SNI="www.sony.jp" ;; 2) SNI="www.nintendo.co.jp" ;; 4) SNI="www.microsoft.com" ;;
+        5) read -p "输入域名: " MANUAL_SNI; [[ -z "$MANUAL_SNI" ]] && SNI="updates.cdn-apple.com" || SNI="$MANUAL_SNI" ;;
+        *) SNI="updates.cdn-apple.com" ;;
     esac
 fi
 
 # --- 资源生成 ---
 if [[ -z "$UUID" ]]; then UUID=$($SB_BIN generate uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid); fi
-
-# +++ MODIFIED +++ 移除不准确 fallback，直接要求支持的 Sing-box 版本
 KEY_PAIR=$($SB_BIN generate reality-keypair 2>/dev/null)
 if [[ -z "$KEY_PAIR" ]]; then
-    echo -e "${RED}错误: 当前 Sing-box 版本不支持 Reality Keypair 生成！请升级到最新版 Sing-box。${PLAIN}"
-    exit 1
+    PRIVATE_KEY=$(openssl rand -base64 32 | tr -d /=+ | head -c 43)
+    PUBLIC_KEY="GenerateFailed"
+else
+    PRIVATE_KEY=$(echo "$KEY_PAIR" | grep "PrivateKey" | awk '{print $2}' | tr -d ' "')
+    PUBLIC_KEY=$(echo "$KEY_PAIR" | grep "PublicKey" | awk '{print $2}' | tr -d ' "')
 fi
-
-PRIVATE_KEY=$(echo "$KEY_PAIR" | grep "PrivateKey" | awk '{print $2}' | tr -d ' "')
-PUBLIC_KEY=$(echo "$KEY_PAIR" | grep "PublicKey" | awk '{print $2}' | tr -d ' "')
 SHORT_ID=$(openssl rand -hex 8)
 
 # --- 核心执行 ---
@@ -112,20 +109,11 @@ tmp_meta=$(mktemp)
 jq --arg tag "$NODE_TAG" --arg pbk "$PUBLIC_KEY" --arg sid "$SHORT_ID" --arg sni "$SNI" \
    '. + {($tag): {"pbk": $pbk, "sid": $sid, "sni": $sni}}' "$META_FILE" > "$tmp_meta" && mv "$tmp_meta" "$META_FILE"
 
-# +++ MODIFIED +++ 新增配置验证
-echo -e "${YELLOW}正在验证配置文件语法...${PLAIN}"
-if ! "$SB_BIN" check -c "$CONFIG_FILE" >/dev/null 2>&1; then
-    echo -e "${RED}配置验证失败！已删除无效节点配置，请检查问题后重新运行。${PLAIN}"
-    jq --arg tag "$NODE_TAG" 'del(.inbounds[]? | select(.tag == $tag))' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
-    jq --arg tag "$NODE_TAG" "del(.$tag)" "$META_FILE" > "$tmp_meta" && mv "$tmp_meta" "$META_FILE"
-    exit 1
-fi
-
 systemctl restart sing-box
 sleep 2
 
 if systemctl is-active --quiet sing-box; then
-    PUBLIC_IP=$(curl -s4m5 https://api.ip.sb/ip || curl -s4m5 https://ifconfig.co || curl -s4 ifconfig.me)  # +++ MODIFIED +++ 增加第三 fallback
+    PUBLIC_IP=$(curl -s4m5 https://api.ip.sb/ip || curl -s4 ifconfig.me)
     NODE_NAME="$NODE_TAG"
     SHARE_LINK="vless://${UUID}@${PUBLIC_IP}:${PORT}?security=reality&encryption=none&pbk=${PUBLIC_KEY}&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=${SNI}&sid=${SHORT_ID}#${NODE_NAME}"
 
