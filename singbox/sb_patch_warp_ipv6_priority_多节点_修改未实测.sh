@@ -1,10 +1,11 @@
 #!/bin/bash
 # ============================================================
-#  Sing-box WARP IPv6 优先分流补丁 (v3.6 Final - Fixed)
-#  - 核心修复: 增加 sing-box check 配置验证与回滚
-#  - 核心修复: 增加 Systemd/Pkill 双模重启兼容 (Docker友好)
-#  - 功能: 多节点选择、自动清理旧规则、IPv6直连/IPv4走WARP
-#  - 修复: 卸载策略时 jq 处理 null inbound 的报错
+#  Sing-box 分流策略管理器 (v3.8 BugFix)
+#  - 核心功能: 实现 "IPv6优先直连，IPv4兜底WARP" 或 "双栈WARP接管"
+#  - 自动化: 自动将选中节点的 domain_strategy 修改为 prefer_ipv6
+#  - 修复: 节点选择时包含序号的 Bug
+#  - 修复: 遇到损坏的规则时 jq 报错退出的问题
+#  - 核心: Systemd/Pkill 双模兼容 + 自动回滚
 # ============================================================
 
 RED='\033[0;31m'
@@ -43,11 +44,10 @@ check_env() {
     fi
 }
 
-# 2. 增强型重启逻辑 (验证+兼容)
+# 2. 增强型重启逻辑
 restart_service() {
     echo -e "${YELLOW}正在验证配置并重启服务...${PLAIN}"
     
-    # 语法检查
     if command -v sing-box &> /dev/null; then
         if ! sing-box check -c "$CONFIG_FILE"; then
              echo -e "${RED}配置语法校验失败！正在回滚...${PLAIN}"
@@ -56,7 +56,6 @@ restart_service() {
         fi
     fi
 
-    # 双模重启 (Systemd / Pkill)
     if systemctl list-unit-files | grep -q sing-box; then
         systemctl restart sing-box
     else
@@ -73,7 +72,7 @@ restart_service() {
     fi
 }
 
-# 3. 获取目标节点
+# 3. 获取目标节点 (修复 Awk 提取逻辑)
 get_target_nodes() {
     echo -e "${SKYBLUE}正在读取入站节点列表...${PLAIN}"
     local nodes=$(jq -r '.inbounds[] | "\(.tag) | \(.type)"' "$CONFIG_FILE" | nl)
@@ -86,95 +85,90 @@ get_target_nodes() {
     echo -e "============================================"
     echo "$nodes"
     echo -e "============================================"
-    echo -e "${SKYBLUE}请输入节点序号 (支持多选，空格分隔):${PLAIN}"
-    echo -e "${GRAY}输入 0 或直接回车退出${PLAIN}"
+    echo -e "${YELLOW}提示: 输入序号选择节点，支持多选 (例如: 1 3)${PLAIN}"
     read -p "请选择: " selection
     
-    if [[ -z "$selection" || "$selection" == "0" ]]; then
-        echo -e "${YELLOW}操作取消。${PLAIN}"
-        exit 0
-    fi
+    if [[ -z "$selection" || "$selection" == "0" ]]; then exit 0; fi
 
     target_tags=()
     for num in $selection; do
+        # [Fix] 使用 $2 准确获取 Tag，避免包含序号 $1
         local tag=$(echo "$nodes" | sed -n "${num}p" | awk -F'|' '{print $1}' | awk '{print $2}')
-        if [[ -n "$tag" ]]; then
-            target_tags+=("$tag")
-            echo -e "${GREEN}已选择节点: $num $tag${PLAIN}"
-        else
-            echo -e "${YELLOW}序号 $num 无效，已忽略。${PLAIN}"
-        fi
+        if [[ -n "$tag" ]]; then target_tags+=("$tag"); fi
     done
 
     if [[ ${#target_tags[@]} -eq 0 ]]; then
-        echo -e "${RED}未选择任何有效节点，操作取消。${PLAIN}"
-        exit 0
+        echo -e "${RED}无效的选择。${PLAIN}"; exit 1
     fi
+    echo -e "${GREEN}已选择节点: ${target_tags[*]}${PLAIN}"
 }
 
-# 4. 应用 IPv6 优先策略
-apply_ipv6_priority() {
+# 4. 应用策略
+apply_strategy() {
+    echo -e "------------------------------------------------"
+    echo -e "${SKYBLUE}请选择流量转发策略:${PLAIN}"
+    echo -e " 1. IPv6走直连 + IPv4走WARP (默认 - 保留原生IPv6性能)"
+    echo -e " 2. 双栈全部走WARP (隐藏真实IP / 全解锁)"
+    read -p "输入选项 (1 或 2，默认1): " strategy_select
+    strategy_select=${strategy_select:-1}
+
     cp "$CONFIG_FILE" "$BACKUP_FILE"
     local tmp_json=$(mktemp)
-
-    # 智能识别 direct 出站
-    local v6_outbound_target="direct"
-    if jq -e '.outbounds[] | select(.tag == "direct")' "$CONFIG_FILE" >/dev/null 2>&1; then
-        local found_direct=$(jq -r '.outbounds[] | select(.tag == "direct") | .tag' "$CONFIG_FILE" | head -n 1)
-        [[ -n "$found_direct" ]] && v6_outbound_target="$found_direct"
+    
+    local v6_target="direct"
+    if [[ "$strategy_select" == "2" ]]; then
+        v6_target="WARP"
+        echo -e "${GREEN}模式: 双栈 WARP 接管${PLAIN}"
+    else
+        if ! jq -e '.outbounds[] | select(.tag == "direct")' "$CONFIG_FILE" >/dev/null 2>&1; then
+            local found_direct=$(jq -r '.outbounds[] | select(.type == "direct") | .tag' "$CONFIG_FILE" | head -n 1)
+            [[ -n "$found_direct" ]] && v6_target="$found_direct"
+        fi
+        echo -e "${GREEN}模式: IPv6 直连 + IPv4 WARP${PLAIN}"
     fi
     
-    # 构造 JSON 数组供 jq 使用
     local tags_arg=$(printf '%s\n' "${target_tags[@]}" | jq -R . | jq -s .)
 
-    # 1. 规则: 选定节点的 IPv6 流量 -> Direct
-    local rule_v6=$(jq -n --argjson tags "$tags_arg" --arg dt "$v6_outbound_target" '{
-        "inbound": $tags,
-        "ip_cidr": ["::/0"],
-        "outbound": $dt
+    # 构造规则
+    local rule_v6=$(jq -n --argjson tags "$tags_arg" --arg dt "$v6_target" '{
+        "inbound": $tags, "ip_cidr": ["::/0"], "outbound": $dt
     }')
-    
-    # 2. 规则: 选定节点的 IPv4 流量 -> WARP
     local rule_v4=$(jq -n --argjson tags "$tags_arg" '{
-        "inbound": $tags,
-        "ip_cidr": ["0.0.0.0/0"],
-        "outbound": "WARP"
+        "inbound": $tags, "ip_cidr": ["0.0.0.0/0"], "outbound": "WARP"
     }')
 
-    echo -e "${YELLOW}正在写入分流规则 (IPv6->${v6_outbound_target}, IPv4->WARP)...${PLAIN}"
+    echo -e "${YELLOW}正在注入规则并修改 domain_strategy...${PLAIN}"
 
-    # 单次 jq 操作：设置 domain_strategy + 置顶两条规则
+    # [Fix] 增加 map(select(type=="object")) 过滤坏数据
     jq --argjson r1 "$rule_v6" --argjson r2 "$rule_v4" --argjson tags "$tags_arg" '
-        (.inbounds[]? | select(.tag as $t | $tags | index($t))).domain_strategy = "prefer_ipv6" |
+        (.inbounds[] | select(.tag as $t | $tags | index($t))).domain_strategy = "prefer_ipv6" |
+        .route.rules |= map(select(type == "object")) | 
         .route.rules = [$r1, $r2] + .route.rules
     ' "$CONFIG_FILE" > "$tmp_json" && mv "$tmp_json" "$CONFIG_FILE"
 
     restart_service
 }
 
-# 5. 卸载策略（修复 null inbound 报错）
+# 5. 卸载策略 (修复 JQ 报错)
 uninstall_policy() {
     echo -e "${YELLOW}正在移除相关分流规则...${PLAIN}"
     get_target_nodes
     
     cp "$CONFIG_FILE" "$BACKUP_FILE"
     local tmp_json=$(mktemp)
-    
     local tags_json=$(printf '%s\n' "${target_tags[@]}" | jq -R . | jq -s .)
     
-    # 修复版：安全处理 inbound 为 null/字符串/数组
+    # [Fix] 增加 select(type == "object") 防止 "Cannot index array" 错误
     jq --argjson targets "$tags_json" '
-        # 重置 domain_strategy
-        (.inbounds[]? | select(.tag as $t | $targets | index($t))).domain_strategy = null |
-
-        # 清理路由规则：安全处理 inbound 为 null/字符串/数组
-        .route.rules |= map(select(
-            if .inbound == null then true
-            elif (.inbound | type) == "string" then ($targets | contains([.inbound]) | not)
-            elif (.inbound | type) == "array" then ($targets | any(in .inbound) | not)
-            else true
-            end
-        ))
+        (.inbounds[] | select(.tag as $t | $targets | index($t))).domain_strategy = null |
+        .route.rules |= map(
+            select(type == "object") |
+            select(
+                (.inbound | type == "array" and (.inbound | inside($targets) | not)) or
+                (.inbound | type == "string" and ([.inbound] | inside($targets) | not)) or
+                (.inbound == null)
+            )
+        )
     ' "$CONFIG_FILE" > "$tmp_json" && mv "$tmp_json" "$CONFIG_FILE"
     
     restart_service
@@ -183,23 +177,16 @@ uninstall_policy() {
 # --- 菜单 ---
 check_env
 echo -e "============================================"
-echo -e " Sing-box IPv6 优先 + WARP 分流助手 (v3.6 Final)"
+echo -e " Sing-box 分流策略管理器 (v3.8 BugFix)"
 echo -e "--------------------------------------------"
-echo -e " 1. 为节点添加 [IPv6优先 + WARP分流] 策略"
-echo -e " 2. 卸载节点的策略"
+echo -e " 1. 添加分流策略 (支持多模式)"
+echo -e " 2. 卸载分流策略"
 echo -e " 0. 退出"
 echo -e "============================================"
 read -p "请选择: " choice
 
 case "$choice" in
-    1)
-        get_target_nodes
-        apply_ipv6_priority
-        ;;
-    2)
-        uninstall_policy
-        ;;
-    *)
-        exit 0
-        ;;
+    1) get_target_nodes; apply_strategy ;;
+    2) uninstall_policy ;;
+    *) exit 0 ;;
 esac
