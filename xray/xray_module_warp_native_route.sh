@@ -1,5 +1,6 @@
 #!/bin/bash
-
+echo "v3.96"
+sleep 5
 # ============================================================
 #  Xray WARP Native Route 管理面板 (v3.96 Strict-Fix)
 #  - 核心逻辑: 移植 Sing-box 的正则清洗算法，完美处理 Reserved 格式
