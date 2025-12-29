@@ -1,6 +1,6 @@
 #!/bin/bash
 #AIRULE: 警告：下面两行只能修改版本号，其他不要动
-echo "v5.6 IPV6绝对优先（两种模式：原生IPV6优先和WARP IP6优先）+ ICMP9修复（修复版 - 2025.12.29）"
+echo "v5.61 IPV6绝对优先（两种模式：原生IPV6优先和WARP IP6优先）+ ICMP9修复（修复版 - 2025.12.29）"
 sleep 2
 
 # ===== 兼容 bash <(curl ...) 或 source 方式运行 =====
