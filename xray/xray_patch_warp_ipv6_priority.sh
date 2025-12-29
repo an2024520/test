@@ -1,6 +1,6 @@
 #!/bin/bash
 echo "v5.1 核心原则：IPV6绝对优先（两种模式：原生IPV6优先和WARP IP6优先）+ ICMP9修复"
-sleep 2
+sleep 10
 # ============================================================
 #  Xray IPv6 优先 + WARP 兜底补丁 (v5.1 Ultimate Final)
 #  - 核心原则: 无论何种模式，强制触发 DNS 解析以优先匹配 IPv6
