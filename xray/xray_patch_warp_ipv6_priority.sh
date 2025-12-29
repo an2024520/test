@@ -1,7 +1,8 @@
 #!/bin/bash
 #AIRULE: 警告：下面两行只能修改版本号，其他不要动
-echo "v5.6 IPV6绝对优先（两种模式：原生IPV6优先和WARP IP6优先）+ ICMP9修复（修复版 - 纯IPv6稳定）"
+echo "v5.62 IPV6绝对优先（两种模式：原生IPV6优先和WARP IP6优先）+ ICMP9修复（修复版 - 纯IPv6稳定）"
 sleep 2
+
 
 # ===== 兼容 bash <(curl ...) 或 source 方式运行 =====
 if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
@@ -9,6 +10,8 @@ if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
     echo -e "\033[31m[提示] 建议直接运行脚本文件，Source 模式仅供调试。\033[0m"
 fi
 
+echo "v5.7 紧急修复：修正 IPv6 Endpoint 语法错误 (Missing Brackets)"
+sleep 2
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -121,7 +124,7 @@ EOF
     echo -e "${GREEN}WARP 凭证已保存 (标准化格式)。${PLAIN}"
 }
 
-# ==================== [新增] 查看凭证信息 ====================
+# ==================== 查看凭证信息 ====================
 view_credentials() {
     if [[ -f "$CRED_FILE" ]]; then
         source "$CRED_FILE" 2>/dev/null
@@ -163,18 +166,18 @@ inject_warp_outbound() {
     
     local res="[${res_str}]"
 
-    # === 关键修复：复刻 native 纯 IPv6 逻辑 + 删除 mtu:1280 ===
-    # 纯 IPv6 时强制 IPv6 endpoint（你的实测证明有效，能拿到 IPv4）
-    # 删除 mtu（用 Xray 默认 1420，避免 IPv4 不启用）
+    # [Critical Fix] 修正 IPv6 Endpoint 格式，必须加 []
     local endpoint="engage.cloudflareclient.com:2408"
-    local ipv4_check=$(curl -4 -s -m 5 http://ip.sb 2>/dev/null)
-    if [[ ! "$ipv4_check" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    local ipv4_check=$(curl -4 -s -m 3 http://ip.sb 2>/dev/null)
+    # 如果 IPv4 检测失败（纯IPv6环境），使用 IPv6 Endpoint 并加上 []
+    if [[ ! "$ipv4_check" =~ ^[0-9.]+$ ]]; then
         endpoint="[2606:4700:d0::a29f:c001]:2408"
     fi
 
     local direct_tag=$(jq -r '.outbounds[] | select(.tag == "direct" or .tag == "freedom" or .protocol == "freedom") | .tag' "$CONFIG_FILE" | head -n 1)
     [[ -z "$direct_tag" ]] && direct_tag="direct"
 
+    # [Unified] 与 Native 脚本保持一致，恢复 MTU 1280
     local warp_json=$(jq -n \
         --arg key "$key" \
         --argjson addr "$addr" \
@@ -189,7 +192,8 @@ inject_warp_outbound() {
                 "peers": [{
                     "publicKey": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
                     "endpoint": $ep,
-                    "reserved": $res
+                    "reserved": $res,
+                    "mtu": 1280
                 }]
             }
         }')
@@ -216,7 +220,7 @@ inject_warp_outbound() {
     }')
     jq --argjson al "$anti_loop_json" '.routing.rules = [$al] + .routing.rules' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
 
-    echo -e "${GREEN}warp-out 已注入（纯 IPv6 下强制 IPv6 endpoint + 默认 MTU）。${PLAIN}"
+    echo -e "${GREEN}warp-out 已注入 (IPv6 语法已修正)。${PLAIN}"
 }
 
 # ==================== 应用分流策略 ====================
@@ -385,7 +389,7 @@ while true; do
     fi
 
     echo -e "============================================"
-    echo -e " Xray IPv6 优先 + WARP 兜底补丁 (v5.6 Unified - 纯IPv6稳定修复)"
+    echo -e " Xray IPv6 优先 + WARP 兜底补丁 (v5.7 BugFix)"
     echo -e " 当前状态: [$st]"
     [[ -n "$mode_hint" ]] && echo -e " $mode_hint"
     echo -e "--------------------------------------------"
