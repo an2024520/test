@@ -1,6 +1,6 @@
 #!/bin/bash
-#警告：下面两行只能修改版本号，其他不要动
-echo "v5.4 IPV6绝对优先（两种模式：原生IPV6优先和WARP IP6优先）+ ICMP9修复"
+#AIRULE: 警告：下面两行只能修改版本号，其他不要动
+echo "v5.6 IPV6绝对优先（两种模式：原生IPV6优先和WARP IP6优先）+ ICMP9修复"
 sleep 2
 
 # ===== 兼容 bash <(curl ...) 或 source 方式运行 =====
@@ -9,14 +9,13 @@ if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
     echo -e "\033[31m[提示] 建议直接运行脚本文件，Source 模式仅供调试。\033[0m"
 fi
 
-echo "v5.4 终极修复：暴力数据清洗 + 变量双向同步 + ICMP9置顶"
-sleep 2
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 SKYBLUE='\033[0;36m'
 PLAIN='\033[0m'
+GRAY='\033[0;37m'
 
 # ==================== 环境自检 ====================
 check_environment() {
@@ -43,56 +42,47 @@ XRAY_BIN=$(command -v xray || echo "/usr/local/bin/xray")
 CRED_FILE="/etc/xray/warp_credentials.conf"
 [[ $EUID -ne 0 ]] && echo -e "${RED}Root required${PLAIN}" && exit 1
 
-# ==================== [核心] 终极智能 Reserved 解析 ====================
+# ==================== [核心] 智能 Reserved 解析 ====================
 smart_parse_reserved() {
     local input="$1"
     
-    # 策略 A: 暴力清洗 (针对带空格、括号、引号的数字串)
-    # 逻辑: 提取所有数字 -> 换行转逗号 -> 去掉末尾逗号
+    # 策略 A: 暴力清洗 (提取所有数字 -> 逗号分隔)
     local nums=$(echo "$input" | grep -oE '[0-9]+' | tr '\n' ',' | sed 's/,$//')
     
-    # 检查清洗结果：是否包含至少3段数字 (例如 123,45,67)
     if [[ "$nums" =~ ^[0-9]+,[0-9]+,[0-9]+$ ]]; then
         echo "$nums"
         return
     fi
     
-    # 策略 B: Base64 解码 (针对 Client ID 字符串)
-    # 如果策略A失败（说明输入里没啥数字，可能是乱码ID），尝试解码
+    # 策略 B: Base64 解码 (针对 Client ID)
     local decoded=""
     if command -v od &>/dev/null; then
-        # 尝试解码 -> 再次暴力提取数字
         decoded=$(echo -n "$input" | base64 -d 2>/dev/null | od -t u1 -An -N 3 | grep -oE '[0-9]+' | tr '\n' ',' | sed 's/,$//')
     fi
     
     if [[ "$decoded" =~ ^[0-9]+,[0-9]+,[0-9]+$ ]]; then
         echo "$decoded"
     else
-        # 策略 C: 实在没招了，返回默认
         echo "0,0,0"
     fi
 }
 
-# ==================== WARP 凭证 (双向兼容版) ====================
+# ==================== WARP 凭证 (标准化统一版) ====================
 manual_warp_input() {
     local def_key="" def_v4="" def_v6="" def_res=""
     
-    # [Fix] 变量读取双保险
     if [[ -f "$CRED_FILE" ]]; then
-        # 先加载文件
         source "$CRED_FILE" 2>/dev/null
-        
-        # 逻辑: 优先读取 Native 脚本格式 (WARP_XXX)，如果为空，再尝试读取 Patch 旧格式 (XXX)
-        if [[ -n "$WARP_PRIV_KEY" ]]; then def_key="$WARP_PRIV_KEY"; else def_key="$PRIV_KEY"; fi
-        if [[ -n "$WARP_IPV4" ]]; then def_v4="$WARP_IPV4"; else def_v4="$V4_ADDR"; fi
-        if [[ -n "$WARP_IPV6" ]]; then def_v6="$WARP_IPV6"; else def_v6="$V6_ADDR"; fi
-        if [[ -n "$WARP_RESERVED" ]]; then def_res="$WARP_RESERVED"; else def_res="$RESERVED"; fi
+        # [Unified] 只读取标准变量名
+        def_key="$WARP_PRIV_KEY"
+        def_v4="$WARP_IPV4"
+        def_v6="$WARP_IPV6"
+        def_res="$WARP_RESERVED"
     fi
 
-    echo -e "${SKYBLUE}=== WARP 配置 (兼容模式) ===${PLAIN}"
-    echo -e "${YELLOW}提示：支持任意格式 (Base64 ID / [1,2,3] / 1, 2, 3)${PLAIN}"
+    echo -e "${SKYBLUE}=== WARP 配置 (Standardized) ===${PLAIN}"
+    echo -e "${YELLOW}提示：Reserved 支持 Base64 ClientID 或 数字格式${PLAIN}"
     
-    # 显示部分私钥用于确认
     local show_key=""
     [[ -n "$def_key" ]] && show_key="${def_key:0:6}..."
 
@@ -111,44 +101,55 @@ manual_warp_input() {
     read -p "Reserved [默认: $default_res_show]: " res_input
     res_input=${res_input:-"$default_res_show"}
 
-    # [Fix] 调用终极解析器
     local clean_res=$(smart_parse_reserved "$res_input")
     echo -e "✅ Reserved 解析结果: [${clean_res}]"
     
-    # 再次清洗 IPv4/IPv6 防止带引号或空格
+    # 基础清洗
     v4=$(echo "$v4" | tr -d ' "''')
     v6=$(echo "$v6" | tr -d ' "''')
     priv_key=$(echo "$priv_key" | tr -d ' "''')
 
     mkdir -p "$(dirname "$CRED_FILE")"
     
-    # [Fix] 双向写入，确保所有脚本都能读懂
+    # [Unified] 只保存标准 WARP_ 变量
     cat > "$CRED_FILE" <<EOF
-# Xray/Sing-box WARP Credentials
 WARP_PRIV_KEY="$priv_key"
 WARP_IPV4="$v4"
 WARP_IPV6="$v6"
 WARP_RESERVED="$clean_res"
-# Legacy Compatibility
-PRIV_KEY="$priv_key"
-V4_ADDR="$v4"
-V6_ADDR="$v6"
-RESERVED="$clean_res"
 EOF
-    echo -e "${GREEN}WARP 凭证已保存。${PLAIN}"
+    echo -e "${GREEN}WARP 凭证已保存 (标准化格式)。${PLAIN}"
+}
+
+# ==================== [新增] 查看凭证信息 ====================
+view_credentials() {
+    if [[ -f "$CRED_FILE" ]]; then
+        source "$CRED_FILE" 2>/dev/null
+        if [[ -n "$WARP_PRIV_KEY" ]]; then
+            echo -e "${SKYBLUE}=== 当前 WARP 凭证信息 ===${PLAIN}"
+            echo -e "PrivKey : ${YELLOW}${WARP_PRIV_KEY}${PLAIN}"
+            echo -e "IPv4    : ${YELLOW}${WARP_IPV4}${PLAIN}"
+            echo -e "IPv6    : ${YELLOW}${WARP_IPV6}${PLAIN}"
+            echo -e "Reserved: ${YELLOW}${WARP_RESERVED}${PLAIN}"
+            echo -e "--------------------------------------------"
+            echo -e "${GRAY}文件路径: $CRED_FILE${PLAIN}"
+        else
+            echo -e "${RED}凭证文件存在但内容无效 (变量为空)。${PLAIN}"
+        fi
+    else
+        echo -e "${RED}未找到凭证文件，请先执行选项 3 进行配置。${PLAIN}"
+    fi
 }
 
 # ==================== 注入 warp-out + anti-loop ====================
 inject_warp_outbound() {
     source "$CRED_FILE" 2>/dev/null
     
-    # [Fix] 注入时的双保险读取
-    local key=""; local v4=""; local v6=""; local res_str=""
-    
-    if [[ -n "$WARP_PRIV_KEY" ]]; then key="$WARP_PRIV_KEY"; else key="$PRIV_KEY"; fi
-    if [[ -n "$WARP_IPV4" ]]; then v4="$WARP_IPV4"; else v4="$V4_ADDR"; fi
-    if [[ -n "$WARP_IPV6" ]]; then v6="$WARP_IPV6"; else v6="$V6_ADDR"; fi
-    if [[ -n "$WARP_RESERVED" ]]; then res_str="$WARP_RESERVED"; else res_str="$RESERVED"; fi
+    # [Unified] 只读取标准变量
+    local key="$WARP_PRIV_KEY"
+    local v4="$WARP_IPV4"
+    local v6="$WARP_IPV6"
+    local res_str="$WARP_RESERVED"
 
     [[ -z "$key" ]] && echo -e "${RED}错误: 凭证无效 (Key为空)，请重新配置。${PLAIN}" && return 1
 
@@ -160,15 +161,12 @@ inject_warp_outbound() {
     [[ -n "$v4" ]] && addr="$addr,\"$v4\""
     addr="$addr]"
     
-    # Reserved 数组化 (确保不再被重复包裹)
-    # clean_res 已经是 1,2,3 格式，直接加 [] 即可
     local res="[${res_str}]"
 
     local endpoint="engage.cloudflareclient.com:2408"
     local ipv4_check=$(curl -4 -s -m 3 http://ip.sb 2>/dev/null)
     [[ ! "$ipv4_check" =~ ^[0-9.]+$ ]] && endpoint="2606:4700:d0::a29f:c001:2408"
 
-    # 智能获取直连 Tag
     local direct_tag=$(jq -r '.outbounds[] | select(.tag == "direct" or .tag == "freedom" or .protocol == "freedom") | .tag' "$CONFIG_FILE" | head -n 1)
     [[ -z "$direct_tag" ]] && direct_tag="direct"
 
@@ -198,7 +196,6 @@ inject_warp_outbound() {
     jq 'del(.outbounds[] | select(.tag == "warp-out"))' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
     jq --argjson w "$warp_json" '.outbounds += [$w]' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
 
-    # Anti-loop
     jq '
         .routing.rules |= map(
             select(
@@ -254,10 +251,8 @@ inject_rule() {
     local tmp=$(mktemp)
     cp "$CONFIG_FILE" "$BACKUP_FILE"
 
-    # 1. 强制 IPIfNonMatch
     jq 'if .routing.domainStrategy? == null or .routing.domainStrategy == "AsIs" then .routing.domainStrategy = "IPIfNonMatch" else . end' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
 
-    # 2. 靶向清洗
     jq --argjson targets "$tags_json" '
         .routing.rules |= map(
             select(
@@ -272,7 +267,6 @@ inject_rule() {
         )
     ' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
 
-    # 3. 注入双层 IP 规则
     local rule_v6=$(jq -n --argjson t "$tags_json" --arg dt "$v6_target" '{ 
         "type": "field", "inboundTag": $t, "network": "tcp,udp", "ip": ["::/0"], "outboundTag": $dt 
     }')
@@ -344,8 +338,6 @@ repair_icmp9_priority() {
     cp "$CONFIG_FILE" "${CONFIG_FILE}.icmp9_fix.bak"
     local tmp=$(mktemp)
     
-    # [Fix] 使用分离-合并算法：
-    # 提取含 user 的规则 + 提取不含 user 的规则 -> 重新拼接
     if jq '
         .routing.rules = (
             (.routing.rules | map(select(has("user")))) + 
@@ -366,9 +358,9 @@ while true; do
     clear
     st="${RED}未配置${PLAIN}"
     has_cred=false
-    # [Fix] 菜单状态检查双向兼容
+    # [Unified] 只检测标准 WARP_ 变量
     if [[ -f "$CRED_FILE" ]]; then
-        if grep -q "WARP_PRIV_KEY" "$CRED_FILE" 2>/dev/null || grep -q "PRIV_KEY" "$CRED_FILE" 2>/dev/null; then
+        if grep -q "WARP_PRIV_KEY" "$CRED_FILE" 2>/dev/null; then
             has_cred=true
         fi
     fi
@@ -389,14 +381,15 @@ while true; do
     fi
 
     echo -e "============================================"
-    echo -e " Xray IPv6 优先 + WARP 兜底补丁 (v5.4 Clean)"
+    echo -e " Xray IPv6 优先 + WARP 兜底补丁 (v5.6 Unified)"
     echo -e " 当前状态: [$st]"
     [[ -n "$mode_hint" ]] && echo -e " $mode_hint"
     echo -e "--------------------------------------------"
-    echo -e " 1. 应用分流策略 (Fix: 凭证读取)"
+    echo -e " 1. 应用分流策略 (Standardized)"
     echo -e " 2. 卸载分流策略"
-    echo -e " 3. 手动配置 WARP (Fix: 暴力清洗)"
-    echo -e " 4. 修复 ICMP9 优先级 (Fix: 强力置顶)"
+    echo -e " 3. 手动配置 WARP (Auto-Clean)"
+    echo -e " 4. 修复 ICMP9 优先级 (Split-Merge)"
+    echo -e " 5. 查看当前凭证信息 (Check)"
     echo -e " 0. 退出"
     echo -e "============================================"
     read -p "选: " c
@@ -405,6 +398,7 @@ while true; do
         2) uninstall_policy; read -p "..." ;;
         3) manual_warp_input; read -p "..." ;;
         4) repair_icmp9_priority; read -p "..." ;;
+        5) view_credentials; read -p "..." ;;
         0) exit 0 ;;
         *) echo -e "${RED}无效${PLAIN}"; sleep 1 ;;
     esac
