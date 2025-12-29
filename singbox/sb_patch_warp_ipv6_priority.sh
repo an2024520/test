@@ -337,46 +337,51 @@ restart_service() {
 }
 
 # --- 主菜单 ---
-check_env
-while true; do
-    clear
-    local st="${RED}未配置${PLAIN}"
-    local has_cred=false
-    
-    [[ -f "$CRED_FILE" ]] && grep -q "PRIV_KEY" "$CRED_FILE" && has_cred=true
-    
-    if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
-        st="${GREEN}已配置（WARP 运行中）${PLAIN}"
-    elif $has_cred; then
-        st="${YELLOW}凭证已保存（未启用 WARP）${PLAIN}"
-    fi
-
-    local mode_hint=""
-    if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
-        if jq -e '.route.rules[] | select(.ip_cidr == ["::/0"] and .outbound != "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
-            mode_hint="当前模式: IPv6优先直连 + IPv4兜底WARP"
-        else
-            mode_hint="当前模式: 双栈全部走WARP"
+# --- 主菜单 ---
+show_menu() {
+    check_env
+    while true; do
+        clear
+        local st="${RED}未配置${PLAIN}"
+        local has_cred=false
+        
+        [[ -f "$CRED_FILE" ]] && grep -q "PRIV_KEY" "$CRED_FILE" && has_cred=true
+        
+        if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
+            st="${GREEN}已配置（WARP 运行中）${PLAIN}"
+        elif $has_cred; then
+            st="${YELLOW}凭证已保存（未启用 WARP）${PLAIN}"
         fi
-    fi
 
-    echo -e "============================================"
-    echo -e " Sing-box 分流策略管理器 (v4.6 Native Pure)"
-    echo -e "--------------------------------------------"
-    echo -e " 当前状态: [$st]"
-    [[ -n "$mode_hint" ]] && echo -e " $mode_hint"
-    echo -e " 1. 添加分流策略 (自动注入/清洗规则)"
-    echo -e " 2. 卸载分流策略"
-    echo -e " 3. 手动配置/更新 WARP 凭证"
-    echo -e " 0. 退出"
-    echo -e "============================================"
-    read -p "请选择: " choice
+        local mode_hint=""
+        if jq -e '.endpoints[]? | select(.tag == "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
+            if jq -e '.route.rules[] | select(.ip_cidr == ["::/0"] and .outbound != "WARP")' "$CONFIG_FILE" >/dev/null 2>&1; then
+                mode_hint="当前模式: IPv6优先直连 + IPv4兜底WARP"
+            else
+                mode_hint="当前模式: 双栈全部走WARP"
+            fi
+        fi
 
-    case "$choice" in
-        1) get_target_nodes; apply_strategy; read -p "回车继续..." ;;
-        2) uninstall_policy; read -p "回车继续..." ;;
-        3) manual_warp_input; echo -e "${GREEN}凭证已更新。${PLAIN}"; read -p "回车继续..." ;;
-        0) exit 0 ;;
-        *) echo -e "${RED}无效选项${PLAIN}"; sleep 1 ;;
-    esac
-done
+        echo -e "============================================"
+        echo -e " Sing-box 分流策略管理器 (v4.6 Native Pure)"
+        echo -e "--------------------------------------------"
+        echo -e " 当前状态: [$st]"
+        [[ -n "$mode_hint" ]] && echo -e " $mode_hint"
+        echo -e " 1. 添加分流策略 (自动注入/清洗规则)"
+        echo -e " 2. 卸载分流策略"
+        echo -e " 3. 手动配置/更新 WARP 凭证"
+        echo -e " 0. 退出"
+        echo -e "============================================"
+        read -p "请选择: " choice
+
+        case "$choice" in
+            1) get_target_nodes; apply_strategy; read -p "回车继续..." ;;
+            2) uninstall_policy; read -p "回车继续..." ;;
+            3) manual_warp_input; echo -e "${GREEN}凭证已更新。${PLAIN}"; read -p "回车继续..." ;;
+            0) exit 0 ;;
+            *) echo -e "${RED}无效选项${PLAIN}"; sleep 1 ;;
+        esac
+    done
+}
+
+show_menu
