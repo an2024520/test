@@ -1,4 +1,6 @@
 #!/bin/bash
+echo "手动修复了SHARE_LIN无ws的host域名-暂未实测"
+sleep 3
 
 # ============================================================
 #  模块九：VLESS + WS (Tunnel 专用版 / 无需证书)
@@ -145,7 +147,7 @@ sleep 2
 if systemctl is-active --quiet xray; then
     NODE_NAME="Xray-Tunnel-${PORT}"
     # 链接生成：前端 443 TLS -> Tunnel -> 本地 8080
-    SHARE_LINK="vless://${UUID}@${DOMAIN}:443?security=tls&encryption=none&type=ws&path=${WS_PATH}&sni=${DOMAIN}&fp=chrome#${NODE_NAME}"
+    SHARE_LINK="vless://${UUID}@${DOMAIN}:443?security=tls&encryption=none&type=ws&host=${DOMAIN}&path=${WS_PATH}&sni=${DOMAIN}&fp=chrome#${NODE_NAME}"
 
     echo -e ""
     echo -e "${GREEN}========================================${PLAIN}"
