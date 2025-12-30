@@ -2,7 +2,7 @@
 
 # ============================================================
 #  模块五：系统运维工具箱 (System Tools)
-#  - 状态: v2.5 (集成 Swap 管理)
+#  - 状态: v2.4 (SSH加固增强版 - 修复 Cloud-init 冲突)
 #  - 适用: Xray / Sing-box / Hysteria2 / Cloudflare Tunnel
 #  - 更新: 自动清除 sshd_config.d 中的覆盖配置
 # ============================================================
@@ -296,69 +296,6 @@ configure_ssh_security() {
     read -p "按回车返回..."
 }
 
-# --- 8. 虚拟内存管理 (Swap) ---
-manage_swap() {
-    # OpenVZ 检测
-    if [[ -d "/proc/vz" ]]; then
-        echo -e "${RED}错误: 您的 VPS 基于 OpenVZ 架构，不支持修改 Swap！${PLAIN}"
-        read -p "按回车返回..."
-        return
-    fi
-
-    while true; do
-        clear
-        echo -e "${BLUE}========= 虚拟内存管理 (Swap) =========${PLAIN}"
-        echo -e "当前 Swap 状态:"
-        free -h | grep -i swap
-        echo -e "------------------------------------------------"
-        echo -e " ${GREEN}1.${PLAIN} 添加/设置 Swap (建议 512MB/1024MB)"
-        echo -e " ${RED}2.${PLAIN} 删除 Swap"
-        echo -e " ------------------------------------------------"
-        echo -e " ${GRAY}0. 返回上一级${PLAIN}"
-        echo ""
-        read -p "请选择: " swap_choice
-        case "$swap_choice" in
-            1)
-                echo -e "\n${YELLOW}>>> 添加 Swap 向导${PLAIN}"
-                read -p "请输入 Swap 数值 (MB) [建议 512]: " swapsize
-                [[ -z "$swapsize" ]] && swapsize=512
-                
-                # 检查是否已存在
-                if grep -q "swap" /etc/fstab; then
-                    echo -e "${RED}错误: 检测到 fstab 中已存在 Swap 配置。${PLAIN}"
-                    echo -e "${YELLOW}建议先执行 [2. 删除 Swap] 清理环境。${PLAIN}"
-                else
-                    echo -e "${YELLOW}正在创建 ${swapsize}MB Swap 文件...${PLAIN}"
-                    dd if=/dev/zero of=/swapfile bs=1M count=${swapsize}
-                    chmod 600 /swapfile
-                    mkswap /swapfile
-                    swapon /swapfile
-                    echo '/swapfile none swap defaults 0 0' >> /etc/fstab
-                    echo -e "${GREEN}✅ Swap 创建成功！${PLAIN}"
-                    echo -e "--------------------------------------"
-                    cat /proc/swaps
-                    cat /proc/meminfo | grep Swap
-                fi
-                read -p "按回车继续..." ;;
-            2)
-                echo -e "\n${YELLOW}>>> 删除 Swap 向导${PLAIN}"
-                if grep -q "swap" /etc/fstab; then
-                    echo -e "${YELLOW}正在停止并删除 Swap...${PLAIN}"
-                    sed -i '/swap/d' /etc/fstab
-                    echo "3" > /proc/sys/vm/drop_caches
-                    swapoff -a
-                    rm -f /swapfile
-                    echo -e "${GREEN}✅ Swap 已删除。${PLAIN}"
-                else
-                    echo -e "${RED}未检测到 Swap 配置 (fstab 中无记录)。${PLAIN}"
-                fi
-                read -p "按回车继续..." ;;
-            0) break ;;
-            *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
-        esac
-    done
-}
-
 # ==========================================
 # 主菜单
 # ==========================================
@@ -376,7 +313,6 @@ show_menu() {
         echo -e " ${SKYBLUE}5.${PLAIN} 查看运行日志 ${YELLOW}(Xray/SB/Hy2/CF)${PLAIN}"
         echo -e " ${GREEN}6.${PLAIN} UDP 端口跳跃管理 ${YELLOW}(适配 Sing-box Hy2)${PLAIN}"
         echo -e " ${GREEN}7.${PLAIN} SSH 安全配置 ${YELLOW}(导入公钥/禁用密码)${PLAIN}"
-        echo -e " ${GREEN}8.${PLAIN} 虚拟内存管理 (Swap) ${YELLOW}(小鸡必备)${PLAIN}"
         echo -e " --------------------------------------------"
         echo -e " ${GRAY}0. 返回上一级${PLAIN}"
         echo ""
@@ -389,7 +325,6 @@ show_menu() {
             5) view_logs; read -p "按回车继续..." ;;
             6) manage_port_hopping ;;
             7) configure_ssh_security ;;
-            8) manage_swap ;;
             0) exit 0 ;;
             *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
