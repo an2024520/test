@@ -193,10 +193,8 @@
 	```
 * **注意**：需配合 Reality 或独立 TLS 使用，客户端需支持 ECH。
 
-### 2.3 待更
-
-## 2. 【核心规则】IPv6 Endpoint 语法强制规范
-* 适用场景：生成 Xray/Sing-box 配置文件，特别是 WireGuard/WARP 的 endpoint 字段。
+### 2.3 【核心规则】IPv6 Endpoint 语法强制规范
+* 适用场景：生成 Xray 配置文件，特别是 WireGuard/WARP 的 endpoint 字段。
 * 规则描述：在组合 IP:端口 字符串时，如果 IP 是 IPv6 字面量（Literal），必须使用方括号 [] 包裹，否则解析器无法区分地址中的冒号和端口分隔符。
 * 反面教材 (**错误**)：
 	```bash
@@ -209,3 +207,4 @@
 	# ✅ 依据：参考 xray_module_warp_native_route.sh 的实现
 	```
 * 检测逻辑：在脚本中拼接 Endpoint 变量前，必须判断 IP 类型。若为 IPv6，强制添加 []。
+

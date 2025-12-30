@@ -21,7 +21,7 @@ XRAY_BIN_PATH="/usr/local/bin/xray_core/xray"
 
 # 逻辑：如果是自动模式(AUTO_SETUP=true) 且 二进制文件已存在
 if [[ "$AUTO_SETUP" == "true" ]] && [[ -f "$XRAY_BIN_PATH" ]]; then
-    # 尝试获取当前版本号 (例如 Xray 25.12.8)
+    # 尝试获取当前版本号 (例如 Xray 1.8.4)
     CURRENT_VER=$($XRAY_BIN_PATH version 2>/dev/null | head -n 1 | awk '{print $2}')
     
     echo -e "${GREEN}>>> [自动模式] 检测到 Xray Core (${CURRENT_VER}) 已安装，跳过核心部署。${PLAIN}"
@@ -35,51 +35,19 @@ if [[ "$AUTO_SETUP" == "true" ]] && [[ -f "$XRAY_BIN_PATH" ]]; then
     exit 0
 fi
 # =================================================
+
 # 2. 系统环境初始化
 echo -e "${YELLOW}正在初始化系统环境 (依赖安装 & 时间同步)...${PLAIN}"
-
-# [新增] 虚拟化环境检测 (适配 LXC/OpenVZ/Podman 等容器)
-VIRT_TYPE=$(systemd-detect-virt 2>/dev/null)
-echo -e "${YELLOW}检测到虚拟化环境: ${VIRT_TYPE}${PLAIN}"
-
-# [关键修正] 时间校准逻辑 (全环境通用版)
-echo -e "${YELLOW}正在校准系统时间...${PLAIN}"
-
-# 无论什么环境，先设置时区 (纠正显示偏移)
-timedatectl set-timezone Asia/Shanghai
-
-# 根据环境决定是否强制同步
-if [[ "$VIRT_TYPE" == "lxc" || "$VIRT_TYPE" == "openvz" || "$VIRT_TYPE" == "docker" || "$VIRT_TYPE" == "podman" || "$VIRT_TYPE" == "wsl" ]]; then
-    echo -e "${SKYBLUE}>>> 容器环境 ($VIRT_TYPE) 无法直接控制内核时钟，跳过主动同步。${PLAIN}"
-    echo -e "${SKYBLUE}>>> 已依赖宿主机时间。若时间误差过大，请联系 VPS 商家。${PLAIN}"
-else
-    # KVM / VMWare / 物理机 -> 强制执行原生同步
-    echo -e "${GREEN}>>> 独立内核环境，正在强制重置 systemd-timesyncd...${PLAIN}"
-    
-    # 确保 systemd-timesyncd 存在 (防止精简版系统缺失)
-    if ! command -v /lib/systemd/systemd-timesyncd >/dev/null 2>&1; then
-        apt update -y && apt install -y systemd-timesyncd >/dev/null 2>&1
-    fi
-
-    timedatectl set-ntp false
-    # 清理冲突
-    if systemctl is-active --quiet chrony; then systemctl stop chrony; systemctl disable chrony; fi
-    
-    # 重启服务并等待
-    systemctl restart systemd-timesyncd
-    timedatectl set-ntp true
-    sleep 2
-fi
-
-# 显示最终时间供确认
-echo -e "${GREEN}当前系统时间: $(date)${PLAIN}"
-
-# [修正后] 只有时间没问题了，才运行 apt update
 apt update -y
-# [修改] 移除 chrony，只安装基础工具
-apt install -y curl wget jq openssl unzip
+# 安装基础工具 + 时间同步服务(chrony)
+apt install -y curl wget jq openssl unzip chrony
 
-
+# 强制立即同步时间 (Xray 对时间极其敏感，误差不能超过90秒)
+echo -e "${YELLOW}正在同步系统时间...${PLAIN}"
+systemctl enable chrony
+systemctl start chrony
+chronyc -a makestep
+echo -e "${GREEN}当前系统时间: $(date)${PLAIN}"
 
 # 3. 清理旧环境 (确保纯净)
 echo -e "${YELLOW}正在清理旧版本残留...${PLAIN}"
@@ -105,20 +73,15 @@ case $ARCH in
     *) echo -e "${RED}不支持的架构: $ARCH${PLAIN}"; exit 1 ;;
 esac
 
-# echo -e "${YELLOW}正在获取 GitHub 最新版本信息...${PLAIN}"
-# [修改] 切换为固定版本源 (Fixed Version Source) - 2025 Modified
-# LATEST_VERSION=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r .tag_name)
-# if [[ -z "$LATEST_VERSION" ]] || [[ "$LATEST_VERSION" == "null" ]]; then
-#     echo -e "${RED}获取版本失败，请检查网络。${PLAIN}"
-#     exit 1
-# fi
-# [新增] 手动指定版本标识
-LATEST_VERSION="Fixed-Repo-Version"
+echo -e "${YELLOW}正在获取 GitHub 最新版本信息...${PLAIN}"
+LATEST_VERSION=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r .tag_name)
+if [[ -z "$LATEST_VERSION" ]] || [[ "$LATEST_VERSION" == "null" ]]; then
+    echo -e "${RED}获取版本失败，请检查网络。${PLAIN}"
+    exit 1
+fi
 
 echo -e "${GREEN}即将安装版本: ${LATEST_VERSION}${PLAIN}"
-# [修改] 使用用户自定义仓库源
-# DOWNLOAD_URL="https://github.com/XTLS/Xray-core/releases/download/${LATEST_VERSION}/Xray-linux-${XRAY_ARCH}.zip"
-DOWNLOAD_URL="https://raw.githubusercontent.com/an2024520/mysh2026/refs/heads/main/xray/Xray-linux-${XRAY_ARCH}.zip"
+DOWNLOAD_URL="https://github.com/XTLS/Xray-core/releases/download/${LATEST_VERSION}/Xray-linux-${XRAY_ARCH}.zip"
 
 wget -O /tmp/xray.zip "$DOWNLOAD_URL"
 if [ $? -ne 0 ]; then
