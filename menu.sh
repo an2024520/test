@@ -169,9 +169,9 @@ check_dir_clean() {
         echo -e "${YELLOW} 检测到目录下存在 $file_count 个文件。${PLAIN}"
         echo -e "${RED} 警告：如果你手动上传了 fix_ipv6 等补丁，请务必选 n！${PLAIN}"
         echo -e ""
-        read -p "是否清空目录并强制更新? (y/n, 默认 n): " clean_opt
+        read -p "是否清空目录里的sh文件并强制更新? (y/n, 默认 n): " clean_opt
         if [[ "$clean_opt" == "y" ]]; then
-            ls | grep -v "^$current_script$" | xargs rm -rf
+            ls *.sh | grep -v "^$current_script$" | xargs rm -f
             echo -e "${GREEN}清理完成。${PLAIN}"; sleep 1
         fi
     fi

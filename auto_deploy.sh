@@ -110,8 +110,8 @@ check_dir_clean() {
         clean_opt=${clean_opt:-y}
 
         if [[ "$clean_opt" == "y" ]]; then
-            echo -e "${YELLOW}正在清理旧文件...${PLAIN}"
-            ls | grep -v "^$current_script$" | xargs rm -rf
+            echo -e "${YELLOW}正在清理旧sh文件...${PLAIN}"
+            ls *.sh | grep -v "^$current_script$" | xargs rm -f
             echo -e "${GREEN}清理完成。${PLAIN}"; sleep 1
         fi
     fi
