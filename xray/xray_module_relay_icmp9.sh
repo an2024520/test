@@ -190,11 +190,12 @@ finish_setup() {
                 --arg path "$LOCAL_PATH" \
                 --arg tls "tls" \
                 --arg sni "$ARGO_DOMAIN" \
-                '{v:$v, ps:$ps, add:$add, port:$port, id:$id, net:$net, type:$type, host:$host, path:$path, tls:$tls, sni:$sni}')
-            
+	--arg fp "chrome" \
+            	'{v:$v, ps:$ps, add:$add, port:$port, id:$id, net:$net, type:$type, host:$host, path:$path, tls:$tls, sni:$sni, fp:$fp}')
+	
             LINK="vmess://$(echo -n "$VMESS_JSON" | base64 -w 0)"
         else
-            LINK="vless://${UUID}@${ARGO_DOMAIN}:443?encryption=none&security=tls&sni=${ARGO_DOMAIN}&type=ws&host=${ARGO_DOMAIN}&path=${LOCAL_PATH}#${NODE_ALIAS}"
+            LINK="vless://${UUID}@${ARGO_DOMAIN}:443?encryption=none&security=tls&sni=${ARGO_DOMAIN}&type=ws&host=${ARGO_DOMAIN}&path=${LOCAL_PATH}&fp=chrome#${NODE_ALIAS}"
         fi
         echo "$LINK" >> /root/xray_nodes2.txt
     done
