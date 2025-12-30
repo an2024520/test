@@ -1,6 +1,6 @@
 #!/bin/bash
 #AIRULE: 警告：下面两行只能修改版本号，其他不要动
-echo "v5.8 IPV6绝对优先（两种模式：原生IPV6优先和WARP IP6优先）+ ICMP9修复（Combo Auto Fix）"
+echo "v5.62 IPV6绝对优先（两种模式：原生IPV6优先和WARP IP6优先）+ ICMP9修复（修复版 - 纯IPv6稳定）"
 sleep 2
 
 
@@ -89,29 +89,20 @@ manual_warp_input() {
     local show_key=""
     [[ -n "$def_key" ]] && show_key="${def_key:0:6}..."
 
-    # [Incremental Patch] Auto-Setup Injection
-    if [[ "$AUTO_SETUP" == "true" ]]; then
-         echo -e "${GREEN}>>> [自动模式] 读取 WARP 凭证...${PLAIN}"
-         priv_key="${WARP_PRIV_KEY}"
-         v4="${WARP_IPV4:-172.16.0.2/32}"
-         v6="${WARP_IPV6}"
-         res_input="${WARP_RESERVED:-0,0,0}"
-    else
-        read -p "私钥 [默认: $show_key]: " priv_key
-        priv_key=${priv_key:-$def_key}
-        [[ -z "$priv_key" ]] && return 1
+    read -p "私钥 [默认: $show_key]: " priv_key
+    priv_key=${priv_key:-$def_key}
+    [[ -z "$priv_key" ]] && return 1
 
-        read -p "IPv4 [默认: ${def_v4:-172.16.0.2/32}]: " v4
-        v4=${v4:-"${def_v4:-172.16.0.2/32}"}
+    read -p "IPv4 [默认: ${def_v4:-172.16.0.2/32}]: " v4
+    v4=${v4:-"${def_v4:-172.16.0.2/32}"}
 
-        read -p "IPv6 [默认: ${def_v6}]: " v6
-        v6=${v6:-$def_v6}
-        [[ -z "$v6" ]] && return 1
+    read -p "IPv6 [默认: ${def_v6}]: " v6
+    v6=${v6:-$def_v6}
+    [[ -z "$v6" ]] && return 1
 
-        local default_res_show="${def_res:-0,0,0}"
-        read -p "Reserved [默认: $default_res_show]: " res_input
-        res_input=${res_input:-"$default_res_show"}
-    fi
+    local default_res_show="${def_res:-0,0,0}"
+    read -p "Reserved [默认: $default_res_show]: " res_input
+    res_input=${res_input:-"$default_res_show"}
 
     local clean_res=$(smart_parse_reserved "$res_input")
     echo -e "✅ Reserved 解析结果: [${clean_res}]"
@@ -243,15 +234,8 @@ inject_rule() {
     echo -e "${SKYBLUE}请选择模式:${PLAIN}"
     echo -e " 1. 原生IPv6直连 + IPv4 WARP兜底"
     echo -e " 2. 双栈走WARP (强制IPv6优先解析)"
-    
-    # [Incremental Patch] Auto Mode Selection
-    if [[ "$AUTO_SETUP" == "true" ]]; then
-        mode_select=${WARP_MODE_SELECT:-1}
-        echo -e "${GREEN}>>> [自动模式] 已选模式: $mode_select${PLAIN}"
-    else
-        read -p "选 (默认1): " mode_select
-        mode_select=${mode_select:-1}
-    fi
+    read -p "选 (默认1): " mode_select
+    mode_select=${mode_select:-1}
 
     local direct_tag=$(jq -r '.outbounds[] | select(.tag == "direct" or .tag == "freedom" or .protocol == "freedom") | .tag' "$CONFIG_FILE" | head -n 1)
     [[ -z "$direct_tag" ]] && direct_tag="direct"
@@ -262,19 +246,13 @@ inject_rule() {
     echo -e "${YELLOW}读取节点...${PLAIN}"
     local node_list=$(jq -r '.inbounds[] | select(.protocol != "dokodemo-door" and .tag != "api") | "\(.tag) | \(.protocol)"' "$CONFIG_FILE" | nl)
     echo "$node_list"
+    read -p "选择节点序号 (空格分隔): " selection
     
-    # [Incremental Patch] Auto Target Selection
     local tags_list=()
-    if [[ "$AUTO_SETUP" == "true" ]] && [[ -n "$TARGET_TAG" ]]; then
-         echo -e "${GREEN}>>> [自动模式] 锁定目标节点: $TARGET_TAG${PLAIN}"
-         tags_list=("$TARGET_TAG")
-    else
-        read -p "选择节点序号 (空格分隔): " selection
-        for num in $selection; do
-            local tag=$(echo "$node_list" | sed -n "${num}p" | awk -F'|' '{print $1}' | awk '{print $2}')
-            [[ -n "$tag" ]] && tags_list+=("$tag")
-        done
-    fi
+    for num in $selection; do
+        local tag=$(echo "$node_list" | sed -n "${num}p" | awk -F'|' '{print $1}' | awk '{print $2}')
+        [[ -n "$tag" ]] && tags_list+=("$tag")
+    done
     [[ ${#tags_list[@]} -eq 0 ]] && return
 
     local tags_json=$(printf '%s\n' "${tags_list[@]}" | jq -R . | jq -s .)
@@ -384,14 +362,6 @@ repair_icmp9_priority() {
 }
 
 # ==================== 菜单 ====================
-# [Incremental Patch] Auto-Run Hook
-if [[ "$AUTO_SETUP" == "true" ]]; then
-    # 自动模式下强制执行: 录入凭证 -> 注入规则
-    manual_warp_input
-    inject_rule
-    exit 0
-fi
-
 while true; do
     clear
     st="${RED}未配置${PLAIN}"
@@ -419,7 +389,7 @@ while true; do
     fi
 
     echo -e "============================================"
-    echo -e " Xray IPv6 优先 + WARP 兜底补丁 (v5.8 Auto Combo)"
+    echo -e " Xray IPv6 优先 + WARP 兜底补丁 (v5.7 BugFix)"
     echo -e " 当前状态: [$st]"
     [[ -n "$mode_hint" ]] && echo -e " $mode_hint"
     echo -e "--------------------------------------------"
