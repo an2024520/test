@@ -1,5 +1,6 @@
 #!/bin/bash
-
+echo "v3.7"
+sleep 3
 # ============================================================
 #  Universal Subscription Manager (通用订阅管理器) v3.7
 #  - 修复: Python 服务增加 IPv6 自动降级支持 (解决 IPv6 Only 启动崩溃问题)
