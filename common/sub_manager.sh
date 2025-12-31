@@ -290,9 +290,9 @@ class AutoHandler(http.server.SimpleHTTPRequestHandler):
     def serve_file(self, filename, content_type):
         file_path = os.path.join(BASE_DIR, TOKEN, filename)
         try:
-            self.send_response(200)  # <<< 修复: 添加正确的 HTTP 状态行，避免 HTTP/0.9 无效响应
             with open(file_path, 'rb') as f:
                 content = f.read()
+            self.send_response(200)  # <<< 修复: 添加正确的 HTTP 状态行，避免 HTTP/0.9 无效响应
             self.send_header("Content-type", content_type)
             self.send_header("Content-Length", str(len(content)))
             self.end_headers()
