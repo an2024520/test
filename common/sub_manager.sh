@@ -1,10 +1,9 @@
 #!/bin/bash
 
 # ============================================================
-#  Universal Subscription Manager (通用订阅管理器) v3.1
-#  - 核心: 全协议解析引擎 (智能清洗版)
-#  - 升级: 自动识别并剥离 "Link: ", "Tag:" 等非链接文本
-#  - 功能: 扫描 -> 转换 -> Web UI (本地) / Worker (云端)
+#  Universal Subscription Manager (通用订阅管理器) v3.4
+#  - 策略: 双轨制 (OpenClash 增强 / v2rayN 兼容)
+#  - 变更: Hy2 恢复指纹采集 (默认 chrome)，交由 Worker 智能分发
 # ============================================================
 
 RED='\033[0;31m'
@@ -31,13 +30,10 @@ TUNNEL_CFG="/etc/cloudflared/config.yml"
 LOCAL_PORT=8080
 CONFIG_FILE="/root/.sub_manager_config" 
 
-# 加载保存的配置
-if [[ -f "$CONFIG_FILE" ]]; then
-    source "$CONFIG_FILE"
-fi
+if [[ -f "$CONFIG_FILE" ]]; then source "$CONFIG_FILE"; fi
 
 # ============================================================
-# 1. Python 核心: 全协议解析引擎 (嵌入式 - 智能清洗版)
+# 1. Python 核心: 全协议解析引擎 (v3.4 双轨版)
 # ============================================================
 generate_converter_py() {
     cat > /tmp/sub_converter.py <<'EOF'
@@ -97,8 +93,9 @@ class ProxyConverter:
                 "tls": True if params.get("security") in ["tls", "reality"] else False,
                 "servername": params.get("sni", ""),
                 "flow": params.get("flow", ""),
-                "client-fingerprint": params.get("fp", ""),
-                "skip-cert-verify": True
+                "client-fingerprint": params.get("fp", "chrome"),
+                "skip-cert-verify": True,
+                "udp": True
             }
             if params.get("security") == "reality":
                 node["reality-opts"] = {"public-key": params.get("pbk"), "short-id": params.get("sid")}
@@ -125,8 +122,13 @@ class ProxyConverter:
                 "sni": params.get("sni", host),
                 "skip-cert-verify": True,
                 "obfs": params.get("obfs", ""),
-                "obfs-password": params.get("obfs-password", "")
+                "obfs-password": params.get("obfs-password", ""),
+                # 策略: 恢复采集指纹，默认 chrome。Worker 会负责在发给 v2rayN 时隐藏它。
+                "fingerprint": params.get("fp", "chrome"),
+                "udp": True
             }
+            if params.get("up_mbps"): node["up"] = f"{params.get('up_mbps')} Mbps"
+            if params.get("down_mbps"): node["down"] = f"{params.get('down_mbps')} Mbps"
             return node
         except: return None
         
@@ -159,6 +161,10 @@ def generate_clash_local(nodes):
         if 'uuid' in n: yaml += f"    uuid: {n['uuid']}\n"
         if 'password' in n: yaml += f"    password: {n['password']}\n"
         if n.get('tls'): yaml += "    tls: true\n"
+        
+        # 本地生成也保留指纹，供参考
+        if n.get('client-fingerprint'): yaml += f"    client-fingerprint: {n['client-fingerprint']}\n"
+        if n.get('fingerprint'): yaml += f"    fingerprint: {n['fingerprint']}\n"
     
     yaml += "\nproxy-groups:\n  - name: '🚀 Proxy'\n    type: select\n    proxies:\n      - DIRECT\n"
     for name in names: yaml += f"      - \"{name}\"\n"
@@ -179,9 +185,6 @@ def main():
             line = line.strip()
             if not line or line.startswith("#"): continue
             
-            # === 智能提取逻辑 ===
-            # 扫描该行是否包含协议头，如果包含，只截取协议头及其后面的内容
-            # 这能自动过滤掉 "Tag:", "Link:", "Time:" 等前缀
             clean_link = None
             for p in protocols:
                 idx = line.find(p)
@@ -189,9 +192,7 @@ def main():
                     clean_link = line[idx:].strip()
                     break
             
-            # 如果这一行里根本没有协议头，说明是纯元数据(Tag/Time)，直接跳过
-            if not clean_link:
-                continue
+            if not clean_link: continue
 
             raw_links.append(clean_link)
             
@@ -207,15 +208,12 @@ def main():
         print("Error: No valid nodes found")
         sys.exit(1)
 
-    # 1. Output V2Ray Base64
     with open(os.path.join(outdir, "v2ray.txt"), "wb") as f:
         f.write(base64.b64encode("\n".join(raw_links).encode('utf-8')))
 
-    # 2. Output Local Clash YAML
     with open(os.path.join(outdir, "clash.yaml"), "w", encoding='utf-8') as f:
         f.write(generate_clash_local(nodes))
         
-    # 3. Output Worker Payload JSON
     worker_payload = {"nodes": nodes}
     with open(os.path.join(outdir, "worker_payload.json"), "w", encoding='utf-8') as f:
         json.dump(worker_payload, f, ensure_ascii=False)
@@ -228,7 +226,7 @@ EOF
 }
 
 # ============================================================
-# 2. Python Server: 本地 Web UI (方案B)
+# 2. Python Server & 3. 功能函数 (保持不变)
 # ============================================================
 generate_server_py() {
     cat > /usr/local/bin/sub_server.py <<EOF
@@ -305,26 +303,17 @@ with socketserver.TCPServer(("", PORT), AutoHandler) as httpd:
 EOF
 }
 
-# ============================================================
-# 3. 功能函数
-# ============================================================
-
 scan_and_select() {
     echo -e "${YELLOW}>>> 正在扫描本地节点文件 (.txt)...${PLAIN}"
     local files=()
     local i=1
-    
-    # 扫描包含常见协议头的文本文件
     while IFS= read -r file; do
         files+=("$file")
         echo -e "$i. ${SKYBLUE}$file${PLAIN}"
         ((i++))
     done < <(find "${SCAN_PATHS[@]}" -maxdepth 3 -name "*.txt" -type f -exec grep -l -E "vmess://|vless://|hysteria2://" {} + 2>/dev/null)
 
-    if [ ${#files[@]} -eq 0 ]; then
-        echo -e "${RED}未找到任何节点文件！${PLAIN}"
-        return 1
-    fi
+    if [ ${#files[@]} -eq 0 ]; then echo -e "${RED}未找到任何节点文件！${PLAIN}"; return 1; fi
 
     read -p "请选择文件编号 [1-${#files[@]}]: " choice
     if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#files[@]} ]; then
@@ -340,34 +329,23 @@ process_subs() {
         SUB_TOKEN=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 12 | head -n 1)
         echo -e "生成随机 Token: ${GREEN}$SUB_TOKEN${PLAIN}"
     fi
-    
     local target_dir="${BASE_DIR}/${SUB_TOKEN}"
     mkdir -p "$target_dir"
-    
     echo -e "${YELLOW}>>> 正在解析节点并生成配置...${PLAIN}"
     generate_converter_py
     python3 /tmp/sub_converter.py "$SELECTED_FILE" "$target_dir"
-    
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}>>> 转换完成！数据已就绪。${PLAIN}"
-    else
-        echo -e "${RED}>>> 转换失败！请检查源文件格式。${PLAIN}"
-        return 1
-    fi
+    if [ $? -eq 0 ]; then echo -e "${GREEN}>>> 转换完成！数据已就绪。${PLAIN}"; else echo -e "${RED}>>> 转换失败！${PLAIN}"; return 1; fi
 }
 
 push_worker() {
     local payload_file="${BASE_DIR}/${SUB_TOKEN}/worker_payload.json"
     if [[ ! -f "$payload_file" ]]; then echo -e "${RED}请先执行步骤 2 进行转换！${PLAIN}"; return; fi
     
-    # 自动读取或询问配置
     if [[ -z "$SAVED_WORKER_URL" ]]; then
         read -p "请输入 Worker URL (不带 /sub): " SAVED_WORKER_URL
         read -p "请输入 Worker Secret: " SAVED_WORKER_SECRET
-        # 保存配置
         echo "SAVED_WORKER_URL=\"$SAVED_WORKER_URL\"" > "$CONFIG_FILE"
         echo "SAVED_WORKER_SECRET=\"$SAVED_WORKER_SECRET\"" >> "$CONFIG_FILE"
-        echo -e "${GREEN}>>> 配置已保存到 $CONFIG_FILE${PLAIN}"
     else
         echo -e "使用已保存 Worker: ${SKYBLUE}$SAVED_WORKER_URL${PLAIN}"
         read -p "是否修改配置? [y/N]: " change
@@ -378,86 +356,59 @@ push_worker() {
              echo "SAVED_WORKER_SECRET=\"$SAVED_WORKER_SECRET\"" >> "$CONFIG_FILE"
         fi
     fi
-    
     echo -e "${YELLOW}>>> 正在推送到云端...${PLAIN}"
     status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${SAVED_WORKER_URL}/update" \
-        -H "Content-Type: application/json" \
-        -H "Authorization: ${SAVED_WORKER_SECRET}" \
-        -d @"$payload_file")
-        
-    if [[ "$status" == "200" ]]; then
-        echo -e "${GREEN}>>> 推送成功！${PLAIN}"
-        echo -e "订阅地址: ${SKYBLUE}${SAVED_WORKER_URL}/sub${PLAIN}"
-        echo -e "管理面板: ${SAVED_WORKER_URL}/sub (浏览器打开)"
-    else
-        echo -e "${RED}>>> 推送失败 (HTTP $status) 请检查 URL 或 密钥。${PLAIN}"
-    fi
+        -H "Content-Type: application/json" -H "Authorization: ${SAVED_WORKER_SECRET}" -d @"$payload_file")
+    if [[ "$status" == "200" ]]; then echo -e "${GREEN}>>> 推送成功！${PLAIN}"; echo -e "订阅地址: ${SKYBLUE}${SAVED_WORKER_URL}/sub${PLAIN}"; else echo -e "${RED}>>> 推送失败 (HTTP $status)${PLAIN}"; fi
 }
 
 start_local_web() {
-    if [[ -z "$ARGO_DOMAIN" ]]; then
-        read -p "请输入 Argo 域名 (用于本地访问): " ARGO_DOMAIN
-    fi
-    
+    if [[ -z "$ARGO_DOMAIN" ]]; then read -p "请输入 Argo 域名: " ARGO_DOMAIN; fi
     if [[ -f "$TUNNEL_CFG" ]]; then
         if ! grep -q "path: /$SUB_TOKEN" "$TUNNEL_CFG"; then
             sed -i "/^ingress:/a \\  - hostname: $ARGO_DOMAIN\\n    path: /$SUB_TOKEN\\n    service: http://localhost:$LOCAL_PORT" "$TUNNEL_CFG"
             systemctl restart cloudflared
-            echo -e "${GREEN}>>> Tunnel 规则已添加并重启。${PLAIN}"
+            echo -e "${GREEN}>>> Tunnel 规则已更新。${PLAIN}"
         fi
     fi
-
     generate_server_py
     read -p "开启时长(分钟, 默认60): " min
     min=${min:-60}
-    
     pkill -f "sub_server.py"
     (timeout "${min}m" python3 /usr/local/bin/sub_server.py >/dev/null 2>&1 &)
-    
-    echo -e "${GREEN}>>> 本地订阅服务已启动！${PLAIN}"
-    echo -e "访问地址: ${SKYBLUE}https://${ARGO_DOMAIN}/${SUB_TOKEN}${PLAIN}"
+    echo -e "${GREEN}>>> 服务已启动！访问: https://${ARGO_DOMAIN}/${SUB_TOKEN}${PLAIN}"
 }
 
-# ============================================================
-# 主菜单
-# ============================================================
 menu() {
     clear
-    echo -e "  ${GREEN}通用订阅管理器 (Sub-Manager Smart v3.1)${PLAIN}"
+    echo -e "  ${GREEN}通用订阅管理器 (Sub-Manager Smart v3.4)${PLAIN}"
     echo -e "--------------------------------"
     echo -e "当前文件: ${SKYBLUE}${SELECTED_FILE:-未选择}${PLAIN}"
     echo -e "当前Token: ${YELLOW}${SUB_TOKEN:-未生成}${PLAIN}"
     echo -e "云端配置: ${SAVED_WORKER_URL:-未设置}"
     echo -e "--------------------------------"
     echo -e "  1. 扫描并选择节点文件"
-    echo -e "  2. 执行转换 (生成数据包)"
-    echo -e "  3. ${GREEN}方案 A${PLAIN}: 推送到 Cloudflare Worker"
-    echo -e "  4. ${SKYBLUE}方案 B${PLAIN}: 开启本地 Web 分享"
+    echo -e "  2. 执行转换"
+    echo -e "  3. ${GREEN}方案 A${PLAIN}: 推送 Worker (双轨分发)"
+    echo -e "  4. ${SKYBLUE}方案 B${PLAIN}: 本地 Web 分享"
     echo -e "  5. 重置 Token"
     echo -e "  0. 退出"
     echo -e "--------------------------------"
-    
     read -p "请选择: " opt
     case "$opt" in
         1) scan_and_select ;;
-        2) 
-           if [[ -z "$SELECTED_FILE" ]]; then scan_and_select; fi
-           process_subs 
-           ;;
+        2) if [[ -z "$SELECTED_FILE" ]]; then scan_and_select; fi; process_subs ;;
         3) push_worker ;;
         4) start_local_web ;;
         5) SUB_TOKEN=""; process_subs ;;
         0) exit 0 ;;
         *) echo "无效选项" ;;
     esac
-    
     read -p "按回车继续..."
     menu
 }
-
 if [[ -f "/usr/local/bin/sub_server.py" ]]; then
     SUB_TOKEN=$(grep '^TOKEN =' "/usr/local/bin/sub_server.py" | cut -d'"' -f2)
     ARGO_DOMAIN=$(grep '^ARGO_DOMAIN =' "/usr/local/bin/sub_server.py" | cut -d'"' -f2)
 fi
-
 menu

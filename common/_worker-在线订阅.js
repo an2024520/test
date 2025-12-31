@@ -1,26 +1,26 @@
 /**
- * SUB 聚合订阅中心 (Ultimate Edition v2)
- * - 修复: VLESS / Hysteria2 协议的 Base64 订阅输出
- * - 功能: Web UI + 自动适配 + 全协议支持
- * - KV: SUB_KV
+ * Universal Subscription Hub (通用订阅中心)
+ * - 核心: 双轨制分发 (OpenClash 增强 / v2rayN 兼容)
+ * - 兼容: VMess / VLESS (Reality) / Hysteria2 / Trojan
+ * - KV绑定: SUB_KV
  */
-const API_SECRET = "ReplaceWithYourSecurePassword"; // ⚠️ 修改回你的密码
+const API_SECRET = "ReplaceWithYourSecurePassword"; // ⚠️ 记得修改回你的密码
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    // POST /update
+    // 1. 上报接口 (POST /update)
     if (request.method === "POST" && url.pathname === "/update") {
       return handleUpdate(request, env);
     }
 
-    // GET /sub
+    // 2. 订阅接口 (GET /sub)
     if (request.method === "GET" && url.pathname.startsWith("/sub")) {
       return handleSubscription(url, request, env);
     }
 
-    // 重定向到订阅页
+    // 3. 根路径重定向
     if (url.pathname === "/") {
       return Response.redirect(url.origin + "/sub", 302);
     }
@@ -36,7 +36,10 @@ async function handleUpdate(request, env) {
   try {
     const data = await request.json();
     if (!data.nodes) throw new Error("Missing nodes field");
+    
+    // 存入 KV (SUB_KV)
     await env.SUB_KV.put("default_nodes", JSON.stringify(data.nodes));
+    
     return new Response(JSON.stringify({ status: "ok", count: data.nodes.length }), {
       headers: { "Content-Type": "application/json" }
     });
@@ -53,15 +56,15 @@ async function handleSubscription(url, request, env) {
   const ua = (request.headers.get("User-Agent") || "").toLowerCase();
   const formatParam = url.searchParams.get("format");
 
-  // 1. 强制指定格式
+  // 1. 强制指定格式 (通过 URL 参数)
   if (formatParam) return serveRawData(nodes, formatParam);
 
-  // 2. 浏览器 Web UI
+  // 2. 浏览器访问 -> 展示 Web UI
   if (ua.includes("mozilla") && !ua.includes("go-http") && !ua.includes("clash")) {
     return serveHTML(url.href, nodes.length);
   }
 
-  // 3. 自动适配
+  // 3. 客户端访问 -> 自动适配
   const autoFormat = ua.includes("clash") ? "clash" : "v2ray";
   return serveRawData(nodes, autoFormat);
 }
@@ -70,10 +73,11 @@ function serveRawData(nodes, format) {
   if (format === "clash") {
     return new Response(toClash(nodes), { headers: { "Content-Type": "text/yaml; charset=utf-8" } });
   }
+  // 默认返回 Base64
   return new Response(toBase64(nodes), { headers: { "Content-Type": "text/plain; charset=utf-8" } });
 }
 
-// --- 核心转换逻辑: 生成 Clash YAML ---
+// --- 核心转换: Clash YAML (完整增强版) ---
 function toClash(nodes) {
   let yaml = "mixed-port: 7890\nallow-lan: true\nmode: rule\nlog-level: info\nproxies:\n";
   let names = [];
@@ -82,6 +86,7 @@ function toClash(nodes) {
     const name = n.name || "Unnamed";
     names.push(name);
     
+    // 基础字段
     yaml += `  - name: "${name}"\n`;
     yaml += `    type: ${n.type}\n`;
     yaml += `    server: ${n.server}\n`;
@@ -89,35 +94,43 @@ function toClash(nodes) {
     yaml += `    skip-cert-verify: true\n`;
     yaml += `    udp: true\n`;
 
+    // 鉴权字段
     if (n.uuid) yaml += `    uuid: ${n.uuid}\n`;
     if (n.password) yaml += `    password: ${n.password}\n`;
     if (n.cipher) yaml += `    cipher: ${n.cipher}\n`;
     if (n.alterId !== undefined) yaml += `    alterId: ${n.alterId}\n`;
     
+    // TLS 配置
     if (n.tls) {
       yaml += `    tls: true\n`;
       if (n.servername) yaml += `    servername: ${n.servername}\n`;
     }
     
-    // Reality
+    // 指纹 (OpenClash/Meta 需要)
+    if (n["client-fingerprint"]) yaml += `    client-fingerprint: ${n["client-fingerprint"]}\n`;
+    if (n["fingerprint"]) yaml += `    fingerprint: ${n["fingerprint"]}\n`;
+    
+    // Reality 配置
     if (n["reality-opts"]) {
       yaml += `    reality-opts:\n`;
       yaml += `      public-key: ${n["reality-opts"]["public-key"]}\n`;
       yaml += `      short-id: ${n["reality-opts"]["short-id"]}\n`;
     }
-    if (n["client-fingerprint"]) yaml += `    client-fingerprint: ${n["client-fingerprint"]}\n`;
+    // Flow (Vision)
     if (n.flow) yaml += `    flow: ${n.flow}\n`;
 
-    // Hysteria2
+    // Hysteria2 特有字段
     if (n.type === 'hysteria2') {
        if (n.obfs) {
            yaml += `    obfs: ${n.obfs}\n`;
            yaml += `    obfs-password: ${n["obfs-password"]}\n`;
        }
        if (n.sni) yaml += `    sni: ${n.sni}\n`;
+       if (n.up) yaml += `    up: ${n.up}\n`;
+       if (n.down) yaml += `    down: ${n.down}\n`;
     }
 
-    // WS / Network
+    // Network / WebSocket
     if (n.network) yaml += `    network: ${n.network}\n`;
     if (n["ws-opts"]) {
       yaml += `    ws-opts:\n`;
@@ -128,16 +141,17 @@ function toClash(nodes) {
     }
   });
 
+  // 策略组
   yaml += "\nproxy-groups:\n  - name: '🚀 Proxy'\n    type: select\n    proxies:\n      - DIRECT\n";
   names.forEach(n => yaml += `      - "${n}"\n`);
   
   return yaml + "\nrules:\n  - MATCH, 🚀 Proxy\n";
 }
 
-// --- 核心转换逻辑: 生成 Base64 (全协议支持) ---
+// --- 核心转换: Base64 (兼容 v2rayN) ---
 function toBase64(nodes) {
   const links = nodes.map(n => {
-    // 1. VMess (JSON Base64)
+    // 1. VMess
     if (n.type === 'vmess') {
        const vmessJson = {
            v: "2", ps: n.name, add: n.server, port: n.port, id: n.uuid,
@@ -147,10 +161,10 @@ function toBase64(nodes) {
        return "vmess://" + btoa(JSON.stringify(vmessJson));
     } 
     
-    // 2. VLESS (URL Scheme)
+    // 2. VLESS (v2rayN 支持指纹，故保留)
     else if (n.type === 'vless') {
        const query = [];
-       if (n.tls) query.push("security=tls"); // 简化处理，Reality 也算 TLS 类
+       if (n.tls) query.push("security=tls");
        if (n["reality-opts"]) {
            query.push("security=reality");
            query.push("pbk=" + n["reality-opts"]["public-key"]);
@@ -169,7 +183,7 @@ function toBase64(nodes) {
        return `vless://${n.uuid}@${n.server}:${n.port}?${query.join("&")}#${encodeURIComponent(n.name)}`;
     }
 
-    // 3. Hysteria2 (URL Scheme)
+    // 3. Hysteria2 (v2rayN 不支持指纹，故意移除)
     else if (n.type === 'hysteria2') {
         const query = [];
         if (n.sni) query.push("sni=" + n.sni);
@@ -177,6 +191,7 @@ function toBase64(nodes) {
             query.push("obfs=" + n.obfs);
             query.push("obfs-password=" + n["obfs-password"]);
         }
+        // ⚠️ 此处不输出 fingerprint，保证 v2rayN 兼容性
         return `hysteria2://${n.password}@${n.server}:${n.port}?${query.join("&")}#${encodeURIComponent(n.name)}`;
     }
     
@@ -193,7 +208,7 @@ function toBase64(nodes) {
   return btoa(links.join("\n"));
 }
 
-// --- Web UI ---
+// --- Web UI (无品牌版) ---
 function serveHTML(currentUrl, count) {
   const html = `
 <!DOCTYPE html>
@@ -201,7 +216,7 @@ function serveHTML(currentUrl, count) {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ICMP9 订阅中心</title>
+<title>订阅中心</title>
 <style>
 :root { --bg: #0f172a; --card: #1e293b; --text: #e2e8f0; --accent: #38bdf8; --btn: #0ea5e9; }
 body { background: var(--bg); color: var(--text); font-family: sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
@@ -220,7 +235,7 @@ button:hover { opacity: 0.9; }
 <body>
 <div class="card">
     <h2>🚀 订阅中心</h2>
-    <div class="status">节点数: <b>${count}</b> | KV: <span style="color:#4ade80">SUB_KV</span></div>
+    <div class="status">云端节点: <b>${count}</b> | KV: <span style="color:#4ade80">SUB_KV</span></div>
     
     <label>通用订阅链接 (OpenClash / v2rayN)</label>
     <div class="box">${currentUrl.split('?')[0]}</div>
@@ -228,7 +243,7 @@ button:hover { opacity: 0.9; }
     <label>强制下载格式</label>
     <select id="fmt">
         <option value="clash">Clash / OpenClash (YAML)</option>
-        <option value="v2ray">V2Ray / v2rayN (Base64)</option>
+        <option value="v2ray">V2Ray (Base64)</option>
     </select>
     
     <button onclick="jump()">打开 / 下载配置</button>
