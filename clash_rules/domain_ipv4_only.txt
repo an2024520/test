@@ -16,3 +16,5 @@ payload:
   - 'github-cloud.s3.amazonaws.com'
   - 'github-production-release-asset-2e65be.s3.amazonaws.com'
   - '+.coinglass.com'
+  - '+..tsdaq.com'
+
