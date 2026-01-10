@@ -18,4 +18,5 @@ payload:
   - '+.coinglass.com'
   - '+.tsdaq.com'
   - '+.tradingview.com'
+  - '+.binance.com'
 
