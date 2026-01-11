@@ -205,7 +205,7 @@ EOF
     if systemctl is-active --quiet cloudflared; then
         echo -e "${GREEN}========================================${PLAIN}"
         echo -e "${GREEN}    Cloudflare Tunnel 启动成功！        ${PLAIN}"
-        [[ "$IS_IPV6_ONLY" == "true" ]] && echo -e "${SKYBLUE}    [IPv6 + HTTP2 优化已启用]           ${PLAIN}\"
+        [[ "$IS_IPV6_ONLY" == "true" ]] && echo -e "${SKYBLUE}    [IPv6 + HTTP2 优化已启用]           ${PLAIN}"
         echo -e "${GREEN}========================================${PLAIN}"
         echo -e "${YELLOW}验证命令：${PLAIN}"
         echo "  journalctl -u cloudflared -f"
@@ -230,9 +230,10 @@ else
     echo "2. 卸载 Tunnel"
     echo "0. 退出"
     read -p "请选择 [0-2]: " choice
-    case "$choice" in
+     case "$choice" in
         1) install_software && configure_tunnel ;;
         2) uninstall_tunnel ;;
         *) exit 0 ;;
     esac
 fi
+
