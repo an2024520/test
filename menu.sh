@@ -1,9 +1,9 @@
 #!/bin/bash
-echo "v4.5 核对数字，避免缓存没下载到最新版"
+echo "v4.6 增加singbox IPV6优先模块"
 sleep 3
 
 # ============================================================
-#  全能协议管理中心 (Commander v4.5 IPv6 Strict)
+#  全能协议管理中心 (Commander v4.6 IPv6 Strict)
 #  - 架构: Xray / Sing-box / Hy2 / Tools 纵向分流
 #  - 升级: Sing-box 模块适配 Hysteria 2 智能部署脚本
 #  - 纯净: 移除内置代理，适配用户自定义 Worker 环境
@@ -109,6 +109,7 @@ FILE_SB_ADD_HY2="sb_hy2_deploy.sh"
 FILE_SB_WARP="sb_module_warp_native_route.sh"
 FILE_SB_INFO="sb_get_node_details.sh"
 FILE_SB_DEL="sb_module_node_del.sh"
+FILE_SB_IPV6="sb_ipv6_preference.sh"
 
 FILE_HY2="hy2.sh"
 FILE_BOOST="sys_tools.sh"
@@ -268,6 +269,7 @@ menu_singbox() {
         echo -e " ${SKYBLUE}8.${PLAIN} Native WARP (接管)   ${GRAY}[$FILE_SB_WARP]${PLAIN}"
         echo -e " ${SKYBLUE}9.${PLAIN} 查看节点链接        ${GRAY}[$FILE_SB_INFO]${PLAIN}"
         echo -e " ${SKYBLUE}10.${PLAIN} 删除指定节点        ${GRAY}[$FILE_SB_DEL]${PLAIN}"
+        echo -e " ${SKYBLUE}11.${PLAIN} IPV6 优先配置       ${GRAY}[$FILE_SB_IPV6]${PLAIN}"
         
         echo -e " ----------------------------------------"
         echo -e " ${GRAY}0. 返回主菜单${PLAIN}"
@@ -279,6 +281,7 @@ menu_singbox() {
             7) check_run "$FILE_SB_ADD_HY2" ;; 
             8) check_run "$FILE_SB_WARP" "true" ;; 
             9) check_run "$FILE_SB_INFO" ;; 10) check_run "$FILE_SB_DEL" ;;
+            11) check_run "$FILE_SB_IPV6" ;;
             0) return ;; *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
     done
@@ -307,7 +310,7 @@ show_main_menu() {
     while true; do
         clear
         echo -e "${GREEN}============================================${PLAIN}"
-        echo -e "${GREEN}      全能协议管理中心 (Commander v4.5)      ${PLAIN}"
+        echo -e "${GREEN}      全能协议管理中心 (Commander v4.6)      ${PLAIN}"
         echo -e "${GREEN}============================================${PLAIN}"
         
         STATUS_TEXT=""
