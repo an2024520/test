@@ -1,6 +1,6 @@
 #!/bin/bash
 #AIRULE: 警告：下面两行只能修改版本号，其他不要动
-echo "v5.8 IPV6绝对优先（两种模式：原生IPV6优先和WARP IP6优先）+ ICMP9修复（Combo Auto Fix）"
+echo "v5.9 IPV6绝对优先 (Auto-Sort Fix Edition) + ICMP9/Relay 自动置顶"
 sleep 2
 
 
@@ -10,7 +10,7 @@ if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
     echo -e "\033[31m[提示] 建议直接运行脚本文件，Source 模式仅供调试。\033[0m"
 fi
 
-echo "v5.7 紧急修复：修正 IPv6 Endpoint 语法错误 (Missing Brackets)"
+echo "v5.9 紧急修复：增强路由排序算法 (User > Domain > IP)"
 sleep 2
 
 RED='\033[0;31m'
@@ -307,6 +307,9 @@ inject_rule() {
     jq --argjson r1 "$rule_v6" --argjson r2 "$rule_v4" \
        '.routing.rules = [$r1, $r2] + .routing.rules' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
 
+    # [Auto-Fix] 立即执行排序修复
+    repair_icmp9_priority "silent"
+
     if [[ -f "$XRAY_BIN" ]] && ! "$XRAY_BIN" run -test -conf "$CONFIG_FILE" >/dev/null 2>&1; then
         echo -e "${RED}预检失败，已回滚${PLAIN}"; cp "$BACKUP_FILE" "$CONFIG_FILE"; return 1
     fi
@@ -357,9 +360,10 @@ uninstall_policy() {
     systemctl restart xray && echo -e "${GREEN}卸载完成。${PLAIN}" || { cp "$BACKUP_FILE" "$CONFIG_FILE"; echo -e "${RED}失败回滚${PLAIN}"; }
 }
 
-# ==================== ICMP9 修复补丁 (Split-Merge) ====================
+# ==================== ICMP9 修复补丁 (Priority Fix) ====================
 repair_icmp9_priority() {
-    echo -e "${YELLOW}正在修复 ICMP9 优先级冲突 (Split-Merge Algorithm)...${PLAIN}"
+    local silent_mode="$1"
+    [[ "$silent_mode" != "silent" ]] && echo -e "${YELLOW}正在执行智能路由重排序 (User > Domain > IP)...${PLAIN}"
     
     if [[ ! -f "$CONFIG_FILE" ]]; then
          echo -e "${RED}未找到配置文件。${PLAIN}"; return 1
@@ -368,17 +372,25 @@ repair_icmp9_priority() {
     cp "$CONFIG_FILE" "${CONFIG_FILE}.icmp9_fix.bak"
     local tmp=$(mktemp)
     
+    # 优先级 1: 含有 "user" 字段的规则 (ICMP9/Relay 用户规则) -> 置顶
+    # 优先级 2: 含有 "domain" 字段的规则 (Anti-Loop/DNS 等) -> 中间
+    # 优先级 3: 其他规则 (通常是 IP 兜底规则，如 WARP ::/0) -> 底部
     if jq '
         .routing.rules = (
             (.routing.rules | map(select(has("user")))) + 
-            (.routing.rules | map(select(has("user") | not)))
+            (.routing.rules | map(select(has("user") | not and has("domain")))) +
+            (.routing.rules | map(select(has("user") | not and (has("domain") | not))))
         )
     ' "$CONFIG_FILE" > "$tmp"; then
         mv "$tmp" "$CONFIG_FILE"
-        systemctl restart xray
-        echo -e "${GREEN}修复完成！ICMP9 规则已强制置顶。${PLAIN}"
+        
+        # 仅在非静默模式下重启和服务，避免在 inject_rule 中发生双重重启
+        if [[ "$silent_mode" != "silent" ]]; then
+            systemctl restart xray
+            echo -e "${GREEN}排序完成！ICMP9/User 规则已强制置顶。${PLAIN}"
+        fi
     else
-        echo -e "${RED}JSON 处理失败，已回滚。${PLAIN}"
+        [[ "$silent_mode" != "silent" ]] && echo -e "${RED}JSON 处理失败，已回滚。${PLAIN}"
         cp "${CONFIG_FILE}.icmp9_fix.bak" "$CONFIG_FILE"
     fi
 }
@@ -419,14 +431,14 @@ while true; do
     fi
 
     echo -e "============================================"
-    echo -e " Xray IPv6 优先 + WARP 兜底补丁 (v5.8 Auto Combo)"
+    echo -e " Xray IPv6 优先 + WARP 兜底补丁 (v5.9 Auto Fix)"
     echo -e " 当前状态: [$st]"
     [[ -n "$mode_hint" ]] && echo -e " $mode_hint"
     echo -e "--------------------------------------------"
-    echo -e " 1. 应用分流策略 (Standardized)"
+    echo -e " 1. 应用分流策略 (Auto Fix ICMP9 Priority)"
     echo -e " 2. 卸载分流策略"
     echo -e " 3. 手动配置 WARP (Auto-Clean)"
-    echo -e " 4. 修复 ICMP9 优先级 (Split-Merge)"
+    echo -e " 4. 强制修复 ICMP9 优先级 (Re-Sort Rules)"
     echo -e " 5. 查看当前凭证信息 (Check)"
     echo -e " 0. 退出"
     echo -e "============================================"
