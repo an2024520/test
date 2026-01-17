@@ -1,0 +1,4 @@
+payload:
+  - '+.ingest.sentry.io'
+  - '+.appsflyersdk.com'
+  - '+.braze.com'

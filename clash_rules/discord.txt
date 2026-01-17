@@ -1,0 +1,11 @@
+payload:
+  - '+.discord.com'
+  - '+.discord.gg'
+  - '+.discord.media'
+  - '+.discord.gateway'
+  - '+.discord.gift'
+  - '+.discord.dev'
+  - '+.discordapp.com'
+  - '+.discordapp.net'
+  - '+.discordcdn.com'
+  - '+.hcaptcha.com'
