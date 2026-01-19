@@ -77,9 +77,10 @@ fix_ssh_keepalive() {
 
 # --- 3. 系统时间同步 ---
 sync_time() {
-    echo -e "${YELLOW}正在同步系统时间...${PLAIN}"
+    echo -e "${YELLOW}正在同步系统时间和时区...${PLAIN}"
     if command -v timedatectl >/dev/null 2>&1; then
         timedatectl set-ntp true
+        timedatectl set-timezone Asia/Shanghai
         echo -e "${GREEN}✅ 已开启 NTP 自动同步。${PLAIN}"
         timedatectl status | grep "Local time"
     else
