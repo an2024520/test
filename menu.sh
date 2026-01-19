@@ -1,13 +1,14 @@
 #!/bin/bash
-echo "v4.6 增加singbox IPV6优先模块"
+echo "v4.7 增加节点级硬分流模块"
 sleep 3
 
 # ============================================================
-#  全能协议管理中心 (Commander v4.6 IPv6 Strict)
+#  全能协议管理中心 (Commander v4.7 IPv6 Strict)
 #  - 架构: Xray / Sing-box / Hy2 / Tools 纵向分流
 #  - 升级: Sing-box 模块适配 Hysteria 2 智能部署脚本
 #  - 纯净: 移除内置代理，适配用户自定义 Worker 环境
 #  - 新增: 适配 Xray v25+ ML-KEM 抗量子加密模块
+#  - 新增: Sing-box 节点级硬分流管理 (IPv4/IPv6 隔离)
 # ============================================================
 
 # 颜色定义
@@ -110,6 +111,8 @@ FILE_SB_WARP="sb_module_warp_native_route.sh"
 FILE_SB_INFO="sb_get_node_details.sh"
 FILE_SB_DEL="sb_module_node_del.sh"
 FILE_SB_IPV6="sb_ipv6_preference.sh"
+# [新增] 节点级硬分流模块
+FILE_SB_SPLIT="sb_strict_split.sh"
 
 FILE_HY2="hy2.sh"
 FILE_BOOST="sys_tools.sh"
@@ -270,6 +273,7 @@ menu_singbox() {
         echo -e " ${SKYBLUE}9.${PLAIN} 查看节点链接        ${GRAY}[$FILE_SB_INFO]${PLAIN}"
         echo -e " ${SKYBLUE}10.${PLAIN} 删除指定节点        ${GRAY}[$FILE_SB_DEL]${PLAIN}"
         echo -e " ${SKYBLUE}11.${PLAIN} IPV6 优先配置       ${GRAY}[$FILE_SB_IPV6]${PLAIN}"
+        echo -e " ${SKYBLUE}12.${PLAIN} 节点分流管理 (硬隔离) ${GRAY}[$FILE_SB_SPLIT]${PLAIN}"
         
         echo -e " ----------------------------------------"
         echo -e " ${GRAY}0. 返回主菜单${PLAIN}"
@@ -282,6 +286,7 @@ menu_singbox() {
             8) check_run "$FILE_SB_WARP" "true" ;; 
             9) check_run "$FILE_SB_INFO" ;; 10) check_run "$FILE_SB_DEL" ;;
             11) check_run "$FILE_SB_IPV6" ;;
+            12) check_run "$FILE_SB_SPLIT" ;;
             0) return ;; *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
     done
@@ -310,7 +315,7 @@ show_main_menu() {
     while true; do
         clear
         echo -e "${GREEN}============================================${PLAIN}"
-        echo -e "${GREEN}      全能协议管理中心 (Commander v4.6)      ${PLAIN}"
+        echo -e "${GREEN}      全能协议管理中心 (Commander v4.7)      ${PLAIN}"
         echo -e "${GREEN}============================================${PLAIN}"
         
         STATUS_TEXT=""

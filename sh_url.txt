@@ -31,3 +31,4 @@ xray_vless_xhttp_reality_mlkem.sh https://raw.githubusercontent.com/an2024520/te
 xray_module_relay_icmp9.sh https://raw.githubusercontent.com/an2024520/mysh2026/refs/heads/main/xray/xray_module_relay_icmp9.sh
 xray_patch_warp_ipv6_priority.sh https://raw.githubusercontent.com/an2024520/mysh2026/refs/heads/main/xray/xray_patch_warp_ipv6_priority.sh
 sb_ipv6_preference.sh https://raw.githubusercontent.com/an2024520/mysh2026/refs/heads/main/singbox/sb_ipv6_preference.sh
+sb_strict_split.sh https://raw.githubusercontent.com/an2024520/mysh2026/refs/heads/main/singbox/sb_strict_split.sh
