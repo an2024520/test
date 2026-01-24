@@ -12,6 +12,9 @@ YELLOW='\033[0;33m'
 SKYBLUE='\033[0;36m'
 PLAIN='\033[0m'
 
+echo "安装依赖JQ"
+apt-get update && apt-get install -y jq
+
 echo -e "${GREEN}>>> [Sing-box] 新增节点: VLESS + WS + TLS (CDN) ...${PLAIN}"
 
 # --- 1. 环境准备 ---
