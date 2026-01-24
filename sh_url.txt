@@ -1,3 +1,4 @@
+acme_manager.sh https://raw.githubusercontent.com/an2024520/mysh2026/refs/heads/main/common/acme_manager.sh
 sh_url.txt https://raw.githubusercontent.com/an2024520/test/refs/heads/main/sh_url.txt
 xray_core.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_core.sh
 xray_vless_xhttp_reality.sh https://raw.githubusercontent.com/an2024520/test/refs/heads/main/xray/xray_vless_xhttp_reality.sh

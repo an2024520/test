@@ -1,11 +1,11 @@
 #!/bin/bash
-echo "v4.7 增加节点级硬分流模块"
+echo "v4.8 集成 ACME 证书管理模块"
 sleep 3
 
 # ============================================================
-#  全能协议管理中心 (Commander v4.7 IPv6 Strict)
+#  全能协议管理中心 (Commander v4.8 IPv6 Strict)
 #  - 架构: Xray / Sing-box / Hy2 / Tools 纵向分流
-#  - 升级: Sing-box 模块适配 Hysteria 2 智能部署脚本
+#  - 升级: 集成 acme_manager.sh 独立证书管理
 #  - 纯净: 移除内置代理，适配用户自定义 Worker 环境
 #  - 新增: 适配 Xray v25+ ML-KEM 抗量子加密模块
 #  - 新增: Sing-box 节点级硬分流管理 (IPv4/IPv6 隔离)
@@ -113,6 +113,8 @@ FILE_SB_DEL="sb_module_node_del.sh"
 FILE_SB_IPV6="sb_ipv6_preference.sh"
 # [新增] 节点级硬分流模块
 FILE_SB_SPLIT="sb_strict_split.sh"
+# [新增] ACME 管理模块
+FILE_ACME="acme_manager.sh"
 
 FILE_HY2="hy2.sh"
 FILE_BOOST="sys_tools.sh"
@@ -299,6 +301,8 @@ menu_system() {
         echo -e " ${SKYBLUE}1.${PLAIN} 系统维护 (BBR/Cert)  ${GRAY}[$FILE_BOOST]${PLAIN}"
         echo -e " ${SKYBLUE}2.${PLAIN} CF Tunnel (Argo)     ${GRAY}[$FILE_CF_TUNNEL]${PLAIN}"
         echo -e " ${SKYBLUE}3.${PLAIN} IPv6 启动修复补丁    ${GRAY}[$FILE_FIX_IPV6]${PLAIN}"
+        # [新增] 选项 4: ACME 管理
+        echo -e " ${SKYBLUE}4.${PLAIN} ACME 证书管理      ${GRAY}[$FILE_ACME]${PLAIN}"
         echo -e " ----------------------------------------"
         echo -e " ${GRAY}0. 返回主菜单${PLAIN}"
         read -p "请选择: " choice
@@ -306,6 +310,7 @@ menu_system() {
             1) check_run "$FILE_BOOST" ;;
             2) check_run "$FILE_CF_TUNNEL" ;;
             3) check_run "$FILE_FIX_IPV6" ;;
+            4) check_run "$FILE_ACME" ;;
             0) return ;; *) echo -e "${RED}无效输入${PLAIN}"; sleep 1 ;;
         esac
     done
@@ -315,7 +320,7 @@ show_main_menu() {
     while true; do
         clear
         echo -e "${GREEN}============================================${PLAIN}"
-        echo -e "${GREEN}      全能协议管理中心 (Commander v4.7)      ${PLAIN}"
+        echo -e "${GREEN}      全能协议管理中心 (Commander v4.8)      ${PLAIN}"
         echo -e "${GREEN}============================================${PLAIN}"
         
         STATUS_TEXT=""
